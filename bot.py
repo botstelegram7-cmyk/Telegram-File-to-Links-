@@ -1,4 +1,6 @@
 import time
+import json
+import aiohttp
 from aiohttp import web
 from motor.motor_asyncio import AsyncIOMotorClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
@@ -220,6 +222,81 @@ HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
+MX_REDIRECT_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Opening in MX Player...</title>
+    <style>
+        body {{
+            background: #090d16;
+            color: #f8fafc;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+            text-align: center;
+        }}
+        .card {{
+            background: #111827;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+            max-width: 450px;
+            width: 100%;
+        }}
+        .btn {{
+            display: inline-block;
+            margin-top: 20px;
+            padding: 14px 28px;
+            border-radius: 12px;
+            background: #2563eb;
+            color: #fff;
+            text-decoration: none;
+            font-weight: bold;
+            width: 100%;
+        }}
+        .btn-sec {{ background: #334155; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🎬 Launching MX Player...</h2>
+        <p style="margin-top: 10px; color: #94a3b8;">If MX Player is installed, your video will play automatically.</p>
+        <a href="intent:{stream_url}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;title={filename};end" class="btn">🟢 Open MX Player (Free)</a>
+        <a href="intent:{stream_url}#Intent;package=com.mxtech.videoplayer.pro;type=video/*;title={filename};end" class="btn" style="background:#059669;">🟢 Open MX Player (Pro)</a>
+        <a href="{web_url}" class="btn btn-sec">🔵 Watch in Web Player</a>
+    </div>
+    <script>
+        setTimeout(() => {{
+            window.location.href = "intent:{stream_url}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;title={filename};end";
+        }}, 800);
+    </script>
+</body>
+</html>"""
+
+async def send_raw_telegram_message(chat_id, text, reply_markup=None, photo_url=None):
+    async with aiohttp.ClientSession() as session:
+        payload = {
+            "chat_id": chat_id,
+            "parse_mode": "HTML",
+            "reply_markup": reply_markup
+        }
+        if photo_url:
+            payload["photo"] = photo_url
+            payload["caption"] = text
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        else:
+            payload["text"] = text
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+        async with session.post(url, json=payload) as resp:
+            return await resp.json()
+
 async def save_user(user):
     await users_col.update_one(
         {"_id": user.id},
@@ -230,44 +307,56 @@ async def save_user(user):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(update.effective_user)
     welcome_text = (
-        f"👋 **Hello {update.effective_user.first_name}!**\n\n"
-        "🎬 **MX Ultra Streamer Bot** is Ready!\n"
-        "⚡ Send me any **Video, Audio, or Document** (up to 2GB).\n\n"
-        "🌟 **Features:**\n"
+        f"👋 <b>Hello {update.effective_user.first_name}!</b>\n\n"
+        "🎬 <b>MX Ultra Streamer Bot</b> is Ready!\n"
+        "⚡ Send me any <b>Video, Audio, or Document</b> (up to 2GB).\n\n"
+        "<blockquote>🌟 <b>Features:</b>\n"
         "• High-Speed Stream & Download Links\n"
         "• YouTube-Style Recent Video Playlist\n"
         "• Mobile Swipe Gestures (Brightness & Volume)\n"
-        "• Permanent Cloud Storage via MongoDB"
+        "• Permanent Cloud Storage via MongoDB</blockquote>"
     )
 
-    buttons = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✨ Web App Streamer", web_app=WebAppInfo(url=f"{BASE_URL}")),
-            InlineKeyboardButton("📖 Help Guide", callback_data="help")
+    buttons = {
+        "inline_keyboard": [
+            [
+                {"text": "🟢 ✨ Web App Streamer", "web_app": {"url": f"{BASE_URL}"}},
+                {"text": "🔵 📖 Help Guide", "callback_data": "help"}
+            ]
         ]
-    ])
+    }
 
-    if START_PIC:
-        await update.message.reply_photo(
-            photo=START_PIC,
-            caption=welcome_text,
-            reply_markup=buttons,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        await update.message.reply_markdown(welcome_text, reply_markup=buttons)
+    await send_raw_telegram_message(
+        chat_id=update.effective_chat.id,
+        text=welcome_text,
+        reply_markup=buttons,
+        photo_url=START_PIC if START_PIC else None
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "📖 **How To Use MX Streamer Bot:**\n\n"
-        "1️⃣ Simply forward or send any media file here.\n"
+        "📖 <b>How To Use MX Streamer Bot:</b>\n\n"
+        "<blockquote>1️⃣ Simply forward or send any media file here.\n"
         "2️⃣ I will upload it safely and generate Permanent Links.\n"
         "3️⃣ In the Video Player:\n"
-        "    • **Swipe Left (Up/Down):** Adjust Brightness ☀️\n"
-        "    • **Swipe Right (Up/Down):** Adjust Volume 🔊\n"
-        "    • **Below Player:** Your recent videos appear like a playlist!"
+        "    • <b>Swipe Left (Up/Down):</b> Adjust Brightness ☀️\n"
+        "    • <b>Swipe Right (Up/Down):</b> Adjust Volume 🔊\n"
+        "    • <b>Below Player:</b> Your recent videos appear like a playlist!</blockquote>"
     )
-    await update.message.reply_markdown(help_text)
+    buttons = {
+        "inline_keyboard": [
+            [{"text": "⚡ Close Help", "callback_data": "close"}]
+        ]
+    }
+    await send_raw_telegram_message(update.effective_chat.id, help_text, buttons)
+
+async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    result = await files_col.delete_many({})
+    await update.message.reply_text(f"🗑️ **Database Cleared!**\n\n✅ Permanently deleted `{result.deleted_count}` saved files from MongoDB.")
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -325,22 +414,27 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await files_col.insert_one(file_doc)
 
+    mx_url = f"{BASE_URL}/mx?id={log_msg.message_id}"
     watch_url = f"{BASE_URL}/watch?id={log_msg.message_id}"
     download_url = f"{BASE_URL}/stream?id={log_msg.message_id}&d=true"
+    direct_url = f"{BASE_URL}/stream?id={log_msg.message_id}"
 
     reply_text = (
         f"✨ **Permanent Stream & Download Ready!**\n\n"
         f"🎬 **File:** `{filename}`\n\n"
-        f"💡 *Tip: Open Web Player to experience Swipe Gestures & Playlist!*"
+        f"💡 *Tip: Play in MX Player app or use our swipe-gesture Web Player!*"
     )
 
     buttons = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📺 Watch in MX Web Player", url=watch_url)
+            InlineKeyboardButton("🟢 Play in MX Player (App)", url=mx_url)
         ],
         [
-            InlineKeyboardButton("📥 Download File", url=download_url),
-            InlineKeyboardButton("🔗 Direct URL", url=f"{BASE_URL}/stream?id={log_msg.message_id}")
+            InlineKeyboardButton("🔵 Watch in Web Player", url=watch_url)
+        ],
+        [
+            InlineKeyboardButton("📥 Instant Download", url=download_url),
+            InlineKeyboardButton("🔗 Direct URL", url=direct_url)
         ]
     ])
 
@@ -348,6 +442,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ptb_app.add_handler(CommandHandler("start", start_command))
 ptb_app.add_handler(CommandHandler("help", help_command))
+ptb_app.add_handler(CommandHandler("clear", clear_command))
 ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
 ptb_app.add_handler(MessageHandler(
     ptb_filters.Document.ALL | ptb_filters.VIDEO | ptb_filters.AUDIO | ptb_filters.PHOTO,
@@ -403,6 +498,26 @@ async def handle_watch(request):
     )
     return web.Response(text=html_content, content_type="text/html")
 
+async def handle_mx_redirect(request):
+    msg_id_str = request.query.get("id")
+    if not msg_id_str or not msg_id_str.isdigit():
+        return web.Response(text="Invalid parameters", status=400)
+
+    msg_id = int(msg_id_str)
+    file_doc = await files_col.find_one({"msg_id": msg_id})
+    if not file_doc:
+        return web.Response(text="File not found", status=404)
+
+    stream_url = f"{BASE_URL}/stream?id={msg_id}"
+    web_url = f"{BASE_URL}/watch?id={msg_id}"
+
+    html_content = MX_REDIRECT_TEMPLATE.format(
+        stream_url=stream_url,
+        web_url=web_url,
+        filename=file_doc["filename"]
+    )
+    return web.Response(text=html_content, content_type="text/html")
+
 async def handle_stream(request):
     msg_id_str = request.query.get("id")
     is_download = request.query.get("d") == "true"
@@ -455,6 +570,7 @@ async def init_app():
     app.router.add_get("/", lambda r: web.Response(text="Enterprise MX Media Streamer is Live!"))
     app.router.add_post(f"/{BOT_TOKEN}", handle_webhook)
     app.router.add_get("/watch", handle_watch)
+    app.router.add_get("/mx", handle_mx_redirect)
     app.router.add_get("/stream", handle_stream)
     app.router.add_get("/setwebhook", handle_setwebhook)
 
