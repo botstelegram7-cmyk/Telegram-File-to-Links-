@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 # Global bot instance
 bot = Bot(token=config.BOT_TOKEN)
 
+# PTB Application – will be initialized at startup
+application = None
+
 
 # -------------------------------------------------------------------
 # Helper: generate signed stream link
@@ -158,6 +161,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main: setup aiohttp app, PTB webhook processing, and start server
 # -------------------------------------------------------------------
 def main():
+    global application
+
     # Build PTB application
     application = Application.builder().token(config.BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -166,11 +171,11 @@ def main():
     # Create aiohttp web app
     app = web.Application()
 
-    # POST route for Telegram webhook (receives updates)
+    # POST route for Telegram webhook
     async def webhook_handler(request: web.Request):
         if request.headers.get("content-type") == "application/json":
             data = await request.json()
-            # Process the update with PTB
+            # Application must be initialized before processing updates
             await application.process_update(Update.de_json(data, bot))
             return web.Response()
         return web.Response(status=400)
@@ -180,9 +185,11 @@ def main():
     # Our custom stream endpoint
     app.router.add_get("/stream", handle_stream)
 
-    # Set webhook on startup
+    # Set webhook on startup and initialize application
     async def on_startup(app):
         webhook_url = f"{config.WEBHOOK_URL}/{config.BOT_TOKEN}"
+        # Initialize PTB application (required for process_update)
+        await application.initialize()
         await bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook set to {webhook_url}")
 
