@@ -473,13 +473,12 @@ ptb_app.add_handler(MessageHandler(
 ))
 
 async def main():
-    # Setup Web Application Server and Routes (Before starting runner)
+    # Setup Web Application Server & All Routes FIRST (Before freezing router)
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="File 2 Links Production Server Online."))
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
     
-    # Webhook Route Registered Safely Before App Starts
     if BASE_URL:
         app.router.add_post(f"/{BOT_TOKEN}", ptb_app.update_queue.put)
 
