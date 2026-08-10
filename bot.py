@@ -23,10 +23,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global bot instance
+# Global bot instance (will be initialized at startup)
 bot = Bot(token=config.BOT_TOKEN)
 
-# PTB Application – will be initialized at startup
+# Global application (will be built and initialized at startup)
 application = None
 
 
@@ -75,6 +75,7 @@ async def handle_stream(request: web.Request):
         return web.Response(status=403, text="Invalid token")
 
     try:
+        # bot is already initialized, so get_file works fine
         tg_file = await bot.get_file(file_id)
         file_path = tg_file.file_path
         telegram_url = f"https://api.telegram.org/file/bot{config.BOT_TOKEN}/{file_path}"
@@ -175,7 +176,7 @@ def main():
     async def webhook_handler(request: web.Request):
         if request.headers.get("content-type") == "application/json":
             data = await request.json()
-            # Application must be initialized before processing updates
+            # Process the update with PTB (both bot and application are already initialized)
             await application.process_update(Update.de_json(data, bot))
             return web.Response()
         return web.Response(status=400)
@@ -185,11 +186,14 @@ def main():
     # Our custom stream endpoint
     app.router.add_get("/stream", handle_stream)
 
-    # Set webhook on startup and initialize application
+    # Set webhook on startup, initialize both bot and application
     async def on_startup(app):
-        webhook_url = f"{config.WEBHOOK_URL}/{config.BOT_TOKEN}"
-        # Initialize PTB application (required for process_update)
+        # Initialize Bot first
+        await bot.initialize()
+        # Then initialize Application
         await application.initialize()
+        # Set webhook
+        webhook_url = f"{config.WEBHOOK_URL}/{config.BOT_TOKEN}"
         await bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook set to {webhook_url}")
 
