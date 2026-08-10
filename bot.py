@@ -31,8 +31,7 @@ tg_client = Client(
 # --- PYTHON TELEGRAM BOT APPLICATION ---
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 
-# Force Subscription Channel Username / Link
-FSUB_CHANNEL = "serenaunzipbot"  # Hardcoded based on request
+FSUB_CHANNEL = "serenaunzipbot"
 FSUB_LINK = "https://t.me/serenaunzipbot"
 
 # --- HTML TEMPLATES FOR PRODUCTION WEB VIEW ---
@@ -181,14 +180,12 @@ async def send_raw_telegram_message(chat_id, text, reply_markup=None, photo_url=
             return await resp.json()
 
 async def check_fsub(bot, user_id):
-    """Hardcoded Force Subscription verification check."""
     try:
         member = await bot.get_chat_member(chat_id=f"@{FSUB_CHANNEL}", user_id=user_id)
         if member.status in ["left", "kicked"]:
             return False
         return True
     except Exception:
-        # Agar bot channel ka admin nahi hai ya koi error aayi toh fail-safe True ya channel link handle karega
         return False
 
 async def save_user(user):
@@ -198,7 +195,6 @@ async def save_user(user):
         upsert=True
     )
 
-# --- COMMAND HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await save_user(user)
@@ -206,7 +202,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
 
-    # Force Sub Verification Check
     is_subscribed = await check_fsub(context.bot, user.id)
     if not is_subscribed:
         fsub_markup = InlineKeyboardMarkup([
@@ -214,8 +209,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔄 Try Again / Verify", callback_data="check_fsub")]
         ])
         await update.message.reply_text(
-            "⚠️ <b>Access Denied!</b>\n\n"
-            "You must join our official channel to use <b>File 2 Links Bot</b>.",
+            "⚠️ <b>Access Restricted!</b>\n\n"
+            "Please join our channel to use <b>File 2 Links Bot</b>.",
             reply_markup=fsub_markup,
             parse_mode=ParseMode.HTML
         )
@@ -223,12 +218,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
-        f"⚡ <b>File 2 Links Bot</b> is fully operational.\n"
-        f"<blockquote>Send any Video, Audio, Photo, or Document to generate secure cloud stream/download links instantly.</blockquote>"
+        f"⚡ <b>File 2 Links Bot</b> is operational.\n"
+        f"<blockquote>Send any media file to generate fast distribution links.</blockquote>"
     )
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✨ Open Web App", web_app={"url": f"{BASE_URL}"}, style="primary")],
-        [InlineKeyboardButton("📖 Help & Guide", callback_data="help_menu", style="success")]
+        [InlineKeyboardButton("✨ Open Web App", web_app={"url": f"{BASE_URL}"})],
+        [InlineKeyboardButton("📖 Help Guide", callback_data="help_menu")]
     ])
 
     await send_raw_telegram_message(
@@ -244,14 +239,13 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == "help_menu":
         help_text = (
-            "📖 <b>File 2 Links - Operational Manual</b>\n\n"
-            "<blockquote>• Forward or send media files to receive secure distribution links.\n"
-            "• Videos/Audio support direct browser playback & downloading.\n"
-            "• Photos, Zips, and Documents generate secure Web View and Download links.\n"
-            "• In groups, tag the bot to process media items securely.</blockquote>"
+            "📖 <b>File 2 Links - Help Center</b>\n\n"
+            "<blockquote>• Forward or send files in chat to get links.\n"
+            "• Videos/Audio support direct streaming.\n"
+            "• Photos and documents provide secure web view & downloads.</blockquote>"
         )
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Close Panel", callback_data="close_menu", style="danger")]
+            [InlineKeyboardButton("❌ Close Panel", callback_data="close_menu")]
         ])
         await query.message.edit_text(help_text, reply_markup=buttons, parse_mode=ParseMode.HTML)
     elif query.data == "close_menu":
@@ -260,21 +254,21 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_subscribed = await check_fsub(context.bot, query.from_user.id)
         if is_subscribed:
             await query.message.delete()
-            await query.message.reply_text("✅ Verification successful! Send your files now.")
+            await query.message.reply_text("✅ Verified successfully! You can send your files now.")
         else:
-            await query.answer("❌ You have not joined the channel yet!", show_alert=True)
+            await query.answer("❌ You haven't joined the channel yet!", show_alert=True)
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     result = await files_col.delete_many({})
-    await update.message.reply_text(f"🗑️ Database purged successfully. Deleted <code>{result.deleted_count}</code> records.", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"🗑️ Cleared database records: <code>{result.deleted_count}</code>", parse_mode=ParseMode.HTML)
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     if not update.message.reply_to_message:
-        await update.message.reply_text("⚠️ Reply to a target announcement message to broadcast.")
+        await update.message.reply_text("⚠️ Reply to an announcement message to broadcast.")
         return
 
     sent = 0
@@ -284,15 +278,13 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sent += 1
         except Exception:
             continue
-    await update.message.reply_text(f"✅ Broadcast transmitted successfully to <code>{sent}</code> active users.", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"✅ Broadcast complete. Delivered to <code>{sent}</code> users.", parse_mode=ParseMode.HTML)
 
-# --- MEDIA HANDLER ---
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
 
-    # Group mention restriction logic
     if chat.type in ["group", "supergroup"]:
         bot_username = context.bot.username
         is_mentioned = False
@@ -303,7 +295,6 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_mentioned:
             return
 
-    # Check Force Subscription for private chats
     if chat.type == "private":
         if not await check_fsub(context.bot, user.id):
             fsub_markup = InlineKeyboardMarkup([
@@ -315,30 +306,30 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user(user)
 
-    media = message.document or message.video or message.audio or (message.photo[-1] if message.photo else None)
+    media = message.document or message.video or message.audio or message.photo
     if not media:
         return
 
-    # Determine Display Name: Caption takes precedence, fallback to filename or media type identifier
     original_caption = message.caption or ""
-    filename = getattr(media, "file_name", None)
     
-    if not filename:
-        if message.photo:
-            filename = f"Image_{int(time.time())}.jpg"
-        elif message.video:
-            filename = f"Video_{int(time.time())}.mp4"
-        elif message.audio:
-            filename = f"Audio_{int(time.time())}.mp3"
-        else:
-            filename = f"Document_{int(time.time())}"
+    # Safe filename extraction for Pyrogram Photo or Document/Video objects
+    if message.photo:
+        filename = f"Image_{int(time.time())}.jpg"
+    else:
+        filename = getattr(media, "file_name", None)
+        if not filename:
+            if message.video:
+                filename = f"Video_{int(time.time())}.mp4"
+            elif message.audio:
+                filename = f"Audio_{int(time.time())}.mp3"
+            else:
+                filename = f"Document_{int(time.time())}"
 
     display_title = original_caption if original_caption.strip() else filename
-
     is_video_audio = bool(message.video or message.audio)
 
     log_caption = (
-        f"📁 <b>Title/Name:</b> <code>{display_title}</code>\n\n"
+        f"📁 <b>Title:</b> <code>{display_title}</code>\n\n"
         f"👤 <b>Uploader:</b> <a href=\"t.me/{user.username}\">{user.full_name}</a> (<code>{user.id}</code>)"
     )
 
@@ -364,42 +355,31 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     download_url = f"{BASE_URL}/stream?id={log_msg.message_id}&d=true"
     direct_url = f"{BASE_URL}/stream?id={log_msg.message_id}"
 
-    # Requirement: "Jab links Doo Dm Me To Caption nhi likha kro .." -> Clean formatted generation info in DM
     if chat.type == "private":
         if is_video_audio:
-            reply_text = (
-                f"🔗 <b>Generated Link Package</b>\n\n"
-                f"<code>{direct_url}</code>\n\n"
-                f"<code>{download_url}</code>"
-            )
+            reply_text = f"<code>{direct_url}</code>\n\n<code>{download_url}</code>"
         else:
-            reply_text = (
-                f"🔗 <b>Generated Link Package</b>\n\n"
-                f"<code>{download_url}</code>\n\n"
-                f"<code>{watch_url}</code>"
-            )
+            reply_text = f"<code>{download_url}</code>\n\n<code>{watch_url}</code>"
     else:
-        # Group chats format with title
         reply_text = (
-            f"✨ <b>Links Generated Successfully!</b>\n\n"
+            f"✨ <b>Links Generated!</b>\n\n"
             f"📌 <b>Title:</b> <code>{display_title}</code>\n\n"
             f"<blockquote>📥 <b>Download Link:</b>\n<code>{download_url}</code></blockquote>"
         )
 
     if is_video_audio:
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Stream / Web View", url=watch_url, style="primary")],
-            [InlineKeyboardButton("📥 Download File", url=download_url, style="success")]
+            [InlineKeyboardButton("🎬 Stream / Web View", url=watch_url)],
+            [InlineKeyboardButton("📥 Download File", url=download_url)]
         ])
     else:
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 Web View Preview", url=watch_url, style="primary")],
-            [InlineKeyboardButton("📥 Download File", url=download_url, style="success")]
+            [InlineKeyboardButton("🌐 Web View Preview", url=watch_url)],
+            [InlineKeyboardButton("📥 Download File", url=download_url)]
         ])
 
     await message.reply_html(reply_text, reply_markup=buttons, disable_web_page_preview=True)
 
-# --- WEB SERVER ROUTERS ---
 async def handle_watch(request):
     msg_id_str = request.query.get("id")
     if not msg_id_str or not msg_id_str.isdigit():
@@ -414,7 +394,6 @@ async def handle_watch(request):
     download_url = f"{stream_url}&d=true"
     display_title = file_doc.get("display_title", "Media File")
 
-    # If it's a video/audio, show plyr stream interface. For photos/zips/docs, show generic file viewer card.
     if file_doc.get("is_video_audio", False):
         html_content = VIDEO_PLAYER_TEMPLATE.format(
             stream_url=stream_url,
@@ -422,8 +401,9 @@ async def handle_watch(request):
             display_title=display_title
         )
     else:
-        icon_emoji = "🖼️" if "Image" in display_title or ".jpg" in display_title.lower() or ".png" in display_title.lower() else "📄"
-        media_preview_html = f'<div class="preview-container"><img src="{stream_url}" alt="Preview"></div>' if icon_emoji == "🖼️" else ""
+        is_image = "Image" in display_title or ".jpg" in display_title.lower() or ".png" in display_title.lower() or ".jpeg" in display_title.lower()
+        icon_emoji = "🖼️" if is_image else "📄"
+        media_preview_html = f'<div class="preview-container"><img src="{stream_url}" alt="Preview"></div>' if is_image else ""
         
         html_content = GENERIC_WEB_TEMPLATE.format(
             display_title=display_title,
@@ -448,13 +428,18 @@ async def handle_stream(request):
 
     try:
         msg = await tg_client.get_messages(LOG_GROUP, msg_id)
-        media = msg.document or msg.video or msg.audio or (msg.photo[-1] if msg.photo else None)
+        media = msg.document or msg.video or msg.audio or msg.photo
         if not media:
             return web.Response(text="Underlying media binary missing", status=404)
 
-        filename = getattr(media, "file_name", file_doc.get("filename", "download"))
-        file_size = getattr(media, "file_size", 0)
-        mime_type = getattr(media, "mime_type", "application/octet-stream")
+        if message_photo := msg.photo:
+            filename = f"Image_{msg_id}.jpg"
+            file_size = getattr(message_photo, "file_size", 0)
+            mime_type = "image/jpeg"
+        else:
+            filename = getattr(media, "file_name", file_doc.get("filename", "download"))
+            file_size = getattr(media, "file_size", 0)
+            mime_type = getattr(media, "mime_type", "application/octet-stream")
 
         headers = {
             "Content-Type": mime_type,
@@ -470,11 +455,14 @@ async def handle_stream(request):
         await response.prepare(request)
 
         async for chunk in tg_client.stream_media(msg):
-            await response.write(chunk)
+            try:
+                await response.write(chunk)
+            except (ConnectionResetError, RuntimeError):
+                break # Handle client closing stream connection safely
 
         return response
     except Exception as e:
-        return web.Response(text=f"Internal Stream Error: {str(e)}", status=500)
+        return web.Response(text=f"Stream Error: {str(e)}", status=500)
 
 ptb_app.add_handler(CommandHandler("start", start_command))
 ptb_app.add_handler(CommandHandler("clear", clear_command))
@@ -488,7 +476,7 @@ ptb_app.add_handler(MessageHandler(
 async def init_app():
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="File 2 Links Production Server Online."))
-    app.router.add_post(f"/{BOT_TOKEN}", lambda r: web.Response(status=200)) # Placeholder webhook handler route
+    app.router.add_post(f"/{BOT_TOKEN}", lambda r: web.Response(status=200))
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
 
