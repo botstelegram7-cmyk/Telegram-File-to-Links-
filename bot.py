@@ -1,5 +1,6 @@
 import time
 import os
+import asyncio
 import aiohttp
 from aiohttp import web
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,7 +11,7 @@ from pyrogram import Client
 
 from config import (
     BOT_TOKEN, API_ID, API_HASH, LOG_GROUP, ADMIN_ID,
-    PORT, MONGO_URI, DB_NAME, AUTO_DELETE_TIME, START_PIC, BASE_URL
+    PORT, MONGO_URI, DB_NAME, START_PIC, BASE_URL
 )
 
 # --- MONGODB CONFIGURATION ---
@@ -34,7 +35,7 @@ ptb_app = Application.builder().token(BOT_TOKEN).build()
 FSUB_CHANNEL = "serenaunzipbot"
 FSUB_LINK = "https://t.me/serenaunzipbot"
 
-# --- HTML TEMPLATES FOR PRODUCTION WEB VIEW ---
+# --- HTML TEMPLATES ---
 GENERIC_WEB_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -209,8 +210,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔄 Try Again / Verify", callback_data="check_fsub")]
         ])
         await update.message.reply_text(
-            "⚠️ <b>Access Restricted!</b>\n\n"
-            "Please join our channel to use <b>File 2 Links Bot</b>.",
+            "⚠️ <b>Access Restricted!</b>\n\nPlease join our channel to use <b>File 2 Links Bot</b>.",
             reply_markup=fsub_markup,
             parse_mode=ParseMode.HTML
         )
@@ -312,7 +312,6 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     original_caption = message.caption or ""
     
-    # Safe filename extraction for Pyrogram Photo or Document/Video objects
     if message.photo:
         filename = f"Image_{int(time.time())}.jpg"
     else:
@@ -458,7 +457,7 @@ async def handle_stream(request):
             try:
                 await response.write(chunk)
             except (ConnectionResetError, RuntimeError):
-                break # Handle client closing stream connection safely
+                break
 
         return response
     except Exception as e:
@@ -473,29 +472,36 @@ ptb_app.add_handler(MessageHandler(
     media_handler
 ))
 
-async def init_app():
+async def main():
+    # Setup Web Application Server
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="File 2 Links Production Server Online."))
-    app.router.add_post(f"/{BOT_TOKEN}", lambda r: web.Response(status=200))
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
 
-    async def on_startup(app):
-        await ptb_app.initialize()
-        await ptb_app.start()
-        await tg_client.start()
-        await ptb_app.bot.set_webhook(url=f"{BASE_URL}/{BOT_TOKEN}")
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
 
-    async def on_shutdown(app):
-        await ptb_app.stop()
-        await ptb_app.shutdown()
-        await tg_client.stop()
-        mongo_client.close()
+    # Initialize and Start Both Clients on the same Loop safely
+    await ptb_app.initialize()
+    await ptb_app.start()
+    await tg_client.start()
 
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-    return app
+    # Webhook Setup
+    if BASE_URL:
+        webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
+        app.router.add_post(f"/{BOT_TOKEN}", ptb_app.update_queue.put)
+        await ptb_app.bot.set_webhook(url=webhook_url)
+
+    print(f"🚀 Service fully running on port {PORT} and loop synchronized!")
+
+    # Keep alive forever
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    app = init_app()
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
