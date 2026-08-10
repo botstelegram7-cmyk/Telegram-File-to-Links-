@@ -15,12 +15,19 @@ logger = logging.getLogger(__name__)
 
 # Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
 PORT = int(os.getenv("PORT", 10000))
 SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_key").encode()
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN environment variable is missing!")
+
+# Automatically handle both BASE_URL or WEBHOOK_URL from environment
+raw_url = os.getenv("BASE_URL") or os.getenv("WEBHOOK_URL", "")
+BASE_URL = raw_url.rstrip("/")
+
+# If the user accidentally pasted the full webhook path (with token), strip it out to get the root domain
+if BASE_URL.endswith(BOT_TOKEN):
+    BASE_URL = BASE_URL[:-len(BOT_TOKEN)].rstrip("/")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TELEGRAM_FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
@@ -148,7 +155,6 @@ async def handle_webhook(request):
         data = await request.json()
         logger.info(f"Received update: {data}")
 
-        # Handle both DM messages and Channel posts
         message = data.get("message") or data.get("channel_post")
         if not message:
             return web.Response(status=200)
@@ -285,10 +291,10 @@ async def handle_stream(request):
 
     return response
 
-# Manual Webhook Set Route (For debugging & fixing)
+# Manual Webhook Set Route
 async def handle_setwebhook(request):
     if not BASE_URL:
-        return web.Response(text="❌ BASE_URL environment variable is not set!", status=400)
+        return web.Response(text="❌ Neither BASE_URL nor WEBHOOK_URL environment variable is set!", status=400)
     
     webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
     async with httpx.AsyncClient() as client:
@@ -325,7 +331,7 @@ async def init_app():
                 res = await client.post(f"{TELEGRAM_API}/setWebhook", json={"url": webhook_url})
                 logger.info(f"Startup Webhook Set Result: {res.json()}")
         else:
-            logger.warning("BASE_URL not found! Webhook was not set automatically.")
+            logger.warning("Neither BASE_URL nor WEBHOOK_URL found! Webhook was not set automatically.")
 
     app.on_startup.append(on_startup)
     return app
@@ -333,4 +339,3 @@ async def init_app():
 if __name__ == "__main__":
     app = init_app()
     web.run_app(app, host="0.0.0.0", port=PORT)
-            
