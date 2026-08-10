@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global bot instance (for downloading files in /stream handler)
+# Global bot instance
 bot = Bot(token=config.BOT_TOKEN)
 
 
@@ -31,9 +31,7 @@ bot = Bot(token=config.BOT_TOKEN)
 # Helper: generate signed stream link
 # -------------------------------------------------------------------
 def generate_stream_link(file_id: str, download: bool = False, validity_hours: int = 24) -> str:
-    """Create a signed URL that expires after `validity_hours`."""
     expire_ts = int(time.time() + validity_hours * 3600)
-    # HMAC-SHA256 of "file_id|expire_ts"
     message = f"{file_id}|{expire_ts}".encode()
     token = hmac.new(config.STREAM_SECRET.encode(), message, hashlib.sha256).hexdigest()
 
@@ -52,7 +50,6 @@ def generate_stream_link(file_id: str, download: bool = False, validity_hours: i
 # aiohttp handler for /stream endpoint
 # -------------------------------------------------------------------
 async def handle_stream(request: web.Request):
-    """Stream a file directly from Telegram, with expiry & token check."""
     file_id = request.query.get("file_id")
     expires = request.query.get("expires")
     token = request.query.get("token")
@@ -66,17 +63,14 @@ async def handle_stream(request: web.Request):
     except ValueError:
         return web.Response(status=400, text="Invalid expiry")
 
-    # Check expiry
     if time.time() > expires_int:
         return web.Response(status=410, text="Link expired")
 
-    # Verify token
     expected_msg = f"{file_id}|{expires_int}".encode()
     expected_token = hmac.new(config.STREAM_SECRET.encode(), expected_msg, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(token, expected_token):
         return web.Response(status=403, text="Invalid token")
 
-    # Get file from Telegram
     try:
         tg_file = await bot.get_file(file_id)
         file_path = tg_file.file_path
@@ -85,7 +79,6 @@ async def handle_stream(request: web.Request):
         logger.error(f"get_file failed: {e}")
         return web.Response(status=404, text="File not found")
 
-    # Stream the content from Telegram to the client
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(telegram_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
@@ -103,11 +96,8 @@ async def handle_stream(request: web.Request):
                     headers["Content-Length"] = content_length
 
                 if download:
-                    # Force download
-                    disposition = f'attachment; filename="{file_id}.mp4"'
-                    headers["Content-Disposition"] = disposition
+                    headers["Content-Disposition"] = f'attachment; filename="{file_id}.mp4"'
                 else:
-                    # Inline playback (stream in browser)
                     headers["Content-Disposition"] = "inline"
 
                 response = web.StreamResponse(status=200, headers=headers)
@@ -148,11 +138,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ कृपया एक वीडियो या वीडियो डॉक्यूमेंट भेजें।")
         return
 
-    # Generate signed links
     stream_link = generate_stream_link(file_id, download=False)
     download_link = generate_stream_link(file_id, download=True)
 
-    # Build inline keyboard with URL buttons
     keyboard = [
         [InlineKeyboardButton("▶️ Stream", url=stream_link)],
         [InlineKeyboardButton("📥 Download", url=download_link)],
@@ -167,23 +155,27 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -------------------------------------------------------------------
-# Main – create aiohttp app, mount PTB webhook, run
+# Main: setup aiohttp app, PTB webhook processing, and start server
 # -------------------------------------------------------------------
 def main():
     # Build PTB application
     application = Application.builder().token(config.BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(
-        MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video)
-    )
+    application.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
 
     # Create aiohttp web app
     app = web.Application()
 
-    # Mount PTB's webhook handler (POST requests from Telegram)
-    app.router.add_post(
-        f"/{config.BOT_TOKEN}", application.create_webhook_handler()
-    )
+    # POST route for Telegram webhook (receives updates)
+    async def webhook_handler(request: web.Request):
+        if request.headers.get("content-type") == "application/json":
+            data = await request.json()
+            # Process the update with PTB
+            await application.process_update(Update.de_json(data, bot))
+            return web.Response()
+        return web.Response(status=400)
+
+    app.router.add_post(f"/{config.BOT_TOKEN}", webhook_handler)
 
     # Our custom stream endpoint
     app.router.add_get("/stream", handle_stream)
