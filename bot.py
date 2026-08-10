@@ -35,7 +35,17 @@ ptb_app = Application.builder().token(BOT_TOKEN).build()
 FSUB_CHANNEL = "serenaunzipbot"
 FSUB_LINK = "https://t.me/serenaunzipbot"
 
-# --- HTML TEMPLATES ---
+# --- HELPER: HUMAN READABLE FILE SIZE ---
+def get_readable_file_size(size_in_bytes):
+    if not size_in_bytes:
+        return "Unknown Size"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_in_bytes < 1024.0:
+            return f"{size_in_bytes:.2f} {unit}"
+        size_in_bytes /= 1024.0
+    return f"{size_in_bytes:.2f} TB"
+
+# --- HTML TEMPLATES WITH VIBRANT COLORED BUTTONS ---
 GENERIC_WEB_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -65,31 +75,37 @@ GENERIC_WEB_TEMPLATE = """<!DOCTYPE html>
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
             text-align: center;
         }}
-        .icon {{ font-size: 48px; margin-bottom: 15px; }}
-        .title {{ font-size: 1.2rem; font-weight: 600; color: #e2e8f0; margin-bottom: 20px; word-break: break-all; }}
-        .preview-container {{ margin: 20px 0; max-height: 350px; overflow: hidden; border-radius: 10px; }}
+        .icon {{ font-size: 52px; margin-bottom: 15px; }}
+        .title {{ font-size: 1.25rem; font-weight: 700; color: #f1f5f9; margin-bottom: 8px; word-break: break-all; }}
+        .meta {{ font-size: 0.9rem; color: #94a3b8; margin-bottom: 20px; }}
+        .preview-container {{ margin: 20px 0; max-height: 350px; overflow: hidden; border-radius: 12px; }}
         .preview-container img {{ width: 100%; height: auto; object-fit: contain; }}
         .btn {{
-            display: inline-block;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
             width: 100%;
-            padding: 12px;
-            background: #2563eb;
+            padding: 14px;
             color: #fff;
             font-weight: 600;
-            border-radius: 10px;
+            border-radius: 12px;
             text-decoration: none;
-            transition: background 0.2s;
-            margin-top: 10px;
+            transition: all 0.2s ease;
+            margin-top: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }}
-        .btn:hover {{ background: #1d4ed8; }}
+        .btn-green {{ background: linear-gradient(135deg, #10b981, #059669); }}
+        .btn-green:hover {{ background: linear-gradient(135deg, #059669, #047857); transform: translateY(-1px); }}
     </style>
 </head>
 <body>
     <div class="card">
         <div class="icon">{icon_emoji}</div>
         <div class="title">{display_title}</div>
+        <div class="meta">💾 Size: {file_size}</div>
         {media_preview_html}
-        <a href="{download_url}" class="btn">📥 Download File Securely</a>
+        <a href="{download_url}" class="btn btn-green">📥 Download File Securely</a>
     </div>
 </body>
 </html>
@@ -118,28 +134,36 @@ VIDEO_PLAYER_TEMPLATE = """<!DOCTYPE html>
             width: 100%;
             max-width: 900px;
             background: #111827;
+            border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 16px;
             overflow: hidden;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
         }}
         .video-container {{ width: 100%; background: #000; }}
         video {{ width: 100%; max-height: 75vh; }}
-        .info-panel {{ padding: 20px; display: flex; flex-direction: column; gap: 15px; }}
-        .title {{ font-size: 1.2rem; font-weight: 700; color: #e2e8f0; word-break: break-all; }}
-        .actions {{ display: flex; gap: 12px; flex-wrap: wrap; }}
+        .info-panel {{ padding: 22px; display: flex; flex-direction: column; gap: 18px; }}
+        .title {{ font-size: 1.3rem; font-weight: 700; color: #f1f5f9; word-break: break-all; }}
+        .meta {{ font-size: 0.95rem; color: #94a3b8; }}
+        .actions {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }}
         .btn {{
-            padding: 10px 20px;
-            border-radius: 10px;
+            padding: 14px 20px;
+            border-radius: 12px;
             font-weight: 600;
             text-decoration: none;
             display: inline-flex;
             align-items: center;
-            gap: 8px;
-            background: #2563eb;
+            justify-content: center;
+            gap: 10px;
             color: #fff;
             border: none;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }}
-        .btn:hover {{ background: #1d4ed8; }}
+        .btn:hover {{ transform: translateY(-2px); }}
+        .btn-orange {{ background: linear-gradient(135deg, #f97316, #ea580c); }}
+        .btn-red {{ background: linear-gradient(135deg, #ef4444, #dc2626); }}
+        .btn-green {{ background: linear-gradient(135deg, #10b981, #059669); }}
+        .btn-blue {{ background: linear-gradient(135deg, #3b82f6, #2563eb); }}
     </style>
 </head>
 <body>
@@ -151,8 +175,11 @@ VIDEO_PLAYER_TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="info-panel">
             <div class="title">🎬 {display_title}</div>
+            <div class="meta">💾 File Size: {file_size}</div>
             <div class="actions">
-                <a href="{download_url}" class="btn">📥 Instant Download</a>
+                <a href="{mx_url}" class="btn btn-orange">🟧 Open in MX Player</a>
+                <a href="{vlc_url}" class="btn btn-red">🔴 Open in VLC</a>
+                <a href="{download_url}" class="btn btn-green">📥 Instant Download</a>
             </div>
         </div>
     </div>
@@ -218,8 +245,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
-        f"⚡ <b>File 2 Links Bot</b> is operational.\n"
-        f"<blockquote>Send any media file to generate fast distribution links.</blockquote>"
+        f"⚡ <b>File 2 Links Bot</b> is operational with <b>Integrated Player Support</b>.\n"
+        f"<blockquote>Send any video, audio, photo, or document to generate instant Streaming & MX Player links.</blockquote>"
     )
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("✨ Open Web App", web_app={"url": f"{BASE_URL}"})],
@@ -241,7 +268,7 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_text = (
             "📖 <b>File 2 Links - Help Center</b>\n\n"
             "<blockquote>• Forward or send files in chat to get links.\n"
-            "• Videos/Audio support direct streaming.\n"
+            "• Videos/Audio support direct streaming, MX Player & VLC.\n"
             "• Photos and documents provide secure web view & downloads.</blockquote>"
         )
         buttons = InlineKeyboardMarkup([
@@ -311,6 +338,8 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     original_caption = message.caption or ""
+    file_size_bytes = getattr(media, "file_size", 0)
+    file_size_str = get_readable_file_size(file_size_bytes)
     
     if message.photo:
         filename = f"Image_{int(time.time())}.jpg"
@@ -328,7 +357,8 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_video_audio = bool(message.video or message.audio)
 
     log_caption = (
-        f"📁 <b>Title:</b> <code>{display_title}</code>\n\n"
+        f"📁 <b>Title:</b> <code>{display_title}</code>\n"
+        f"💾 <b>Size:</b> <code>{file_size_str}</code>\n\n"
         f"👤 <b>Uploader:</b> <a href=\"t.me/{user.username}\">{user.full_name}</a> (<code>{user.id}</code>)"
     )
 
@@ -345,6 +375,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "user_id": user.id,
         "filename": filename,
         "display_title": display_title,
+        "file_size_str": file_size_str,
         "is_video_audio": is_video_audio,
         "created_at": int(time.time())
     }
@@ -353,31 +384,89 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     watch_url = f"{BASE_URL}/watch?id={log_msg.message_id}"
     download_url = f"{BASE_URL}/stream?id={log_msg.message_id}&d=true"
     direct_url = f"{BASE_URL}/stream?id={log_msg.message_id}"
+    mx_url = f"{BASE_URL}/mx?id={log_msg.message_id}"
+    vlc_url = f"{BASE_URL}/vlc?id={log_msg.message_id}"
 
-    if chat.type == "private":
-        if is_video_audio:
-            reply_text = f"<code>{direct_url}</code>\n\n<code>{download_url}</code>"
-        else:
-            reply_text = f"<code>{download_url}</code>\n\n<code>{watch_url}</code>"
-    else:
-        reply_text = (
-            f"✨ <b>Links Generated!</b>\n\n"
-            f"📌 <b>Title:</b> <code>{display_title}</code>\n\n"
-            f"<blockquote>📥 <b>Download Link:</b>\n<code>{download_url}</code></blockquote>"
-        )
+    # RICH FORMATTED TELEGRAM MESSAGE
+    reply_text = (
+        f"⚡ <b>File Stream & Download Ready!</b>\n\n"
+        f"📁 <b>File Name:</b> <code>{filename}</code>\n"
+        f"💾 <b>File Size:</b> <code>{file_size_str}</code>\n\n"
+        f"<blockquote>🔗 <b>Direct Link:</b>\n<code>{direct_url}</code></blockquote>"
+    )
 
     if is_video_audio:
         buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎬 Stream / Web View", url=watch_url)],
-            [InlineKeyboardButton("📥 Download File", url=download_url)]
+            [
+                InlineKeyboardButton("🖥️ Watch Web View", url=watch_url),
+                InlineKeyboardButton("📥 Download", url=download_url)
+            ],
+            [
+                InlineKeyboardButton("🟧 MX Player", url=mx_url),
+                InlineKeyboardButton("🔴 VLC Player", url=vlc_url)
+            ]
         ])
     else:
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🌐 Web View Preview", url=watch_url)],
-            [InlineKeyboardButton("📥 Download File", url=download_url)]
+            [InlineKeyboardButton("📥 Fast Download File", url=download_url)]
         ])
 
     await message.reply_html(reply_text, reply_markup=buttons, disable_web_page_preview=True)
+
+# --- INSTANT HTML REDIRECT HANDLERS FOR MX PLAYER & VLC ---
+async def handle_mx(request):
+    msg_id_str = request.query.get("id")
+    if not msg_id_str or not msg_id_str.isdigit():
+        return web.Response(text="Invalid parameters", status=400)
+
+    msg_id = int(msg_id_str)
+    file_doc = await files_col.find_one({"msg_id": msg_id})
+    display_title = file_doc.get("display_title", "Media Stream") if file_doc else "Media Stream"
+    
+    stream_url = f"{BASE_URL}/stream?id={msg_id}"
+    intent_url = f"intent:{stream_url}#Intent;package=com.mxtech.videoplayer.ad;S.title={display_title};end"
+    
+    html_content = f"""<!DOCTYPE html>
+    <html><head>
+        <meta charset="UTF-8">
+        <title>Opening MX Player...</title>
+        <meta http-equiv="refresh" content="0;url={intent_url}">
+        <style>
+            body {{ background: #090d16; color: #f8fafc; font-family: sans-serif; text-align: center; padding: 50px 20px; }}
+            .btn {{ display: inline-block; margin-top: 20px; padding: 12px 25px; background: #f97316; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }}
+        </style>
+    </head><body>
+        <h2>🟧 Opening in MX Player...</h2>
+        <p>If MX Player does not open automatically, click the button below:</p>
+        <a href="{intent_url}" class="btn">▶️ Open MX Player Now</a>
+    </body></html>"""
+    return web.Response(text=html_content, content_type="text/html")
+
+async def handle_vlc(request):
+    msg_id_str = request.query.get("id")
+    if not msg_id_str or not msg_id_str.isdigit():
+        return web.Response(text="Invalid parameters", status=400)
+
+    msg_id = int(msg_id_str)
+    stream_url = f"{BASE_URL}/stream?id={msg_id}"
+    vlc_url = f"vlc://{stream_url}"
+    
+    html_content = f"""<!DOCTYPE html>
+    <html><head>
+        <meta charset="UTF-8">
+        <title>Opening VLC Player...</title>
+        <meta http-equiv="refresh" content="0;url={vlc_url}">
+        <style>
+            body {{ background: #090d16; color: #f8fafc; font-family: sans-serif; text-align: center; padding: 50px 20px; }}
+            .btn {{ display: inline-block; margin-top: 20px; padding: 12px 25px; background: #ef4444; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }}
+        </style>
+    </head><body>
+        <h2>🔴 Opening in VLC Player...</h2>
+        <p>If VLC Player does not open automatically, click the button below:</p>
+        <a href="{vlc_url}" class="btn">▶️ Open VLC Player Now</a>
+    </body></html>"""
+    return web.Response(text=html_content, content_type="text/html")
 
 async def handle_watch(request):
     msg_id_str = request.query.get("id")
@@ -391,13 +480,20 @@ async def handle_watch(request):
 
     stream_url = f"{BASE_URL}/stream?id={msg_id}"
     download_url = f"{stream_url}&d=true"
+    mx_url = f"intent:{stream_url}#Intent;package=com.mxtech.videoplayer.ad;S.title={file_doc.get('display_title', 'Video')};end"
+    vlc_url = f"vlc://{stream_url}"
+    
     display_title = file_doc.get("display_title", "Media File")
+    file_size_str = file_doc.get("file_size_str", "Unknown Size")
 
     if file_doc.get("is_video_audio", False):
         html_content = VIDEO_PLAYER_TEMPLATE.format(
             stream_url=stream_url,
             download_url=download_url,
-            display_title=display_title
+            mx_url=mx_url,
+            vlc_url=vlc_url,
+            display_title=display_title,
+            file_size=file_size_str
         )
     else:
         is_image = "Image" in display_title or ".jpg" in display_title.lower() or ".png" in display_title.lower() or ".jpeg" in display_title.lower()
@@ -406,6 +502,7 @@ async def handle_watch(request):
         
         html_content = GENERIC_WEB_TEMPLATE.format(
             display_title=display_title,
+            file_size=file_size_str,
             icon_emoji=icon_emoji,
             download_url=download_url,
             media_preview_html=media_preview_html
@@ -487,6 +584,8 @@ async def main():
     app.router.add_get("/", lambda r: web.Response(text="File 2 Links Production Server Online."))
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
+    app.router.add_get("/mx", handle_mx)
+    app.router.add_get("/vlc", handle_vlc)
     
     if BASE_URL:
         app.router.add_post(f"/{BOT_TOKEN}", webhook_handler)
