@@ -3,7 +3,6 @@ import time
 import hmac
 import hashlib
 import logging
-import urllib.parse
 from aiohttp import web, ClientSession
 import httpx
 
@@ -34,6 +33,98 @@ def verify_token(file_id: str, expires: int, token: str) -> bool:
     expected_token = generate_token(file_id, expires)
     return hmac.compare_digest(expected_token, token)
 
+# HTML Web Video Player Template
+HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Video - Web Player</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            background-color: #0f172a;
+            color: #f8fafc;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }}
+        .player-container {{
+            width: 100%;
+            max-width: 900px;
+            background: #1e293b;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+        }}
+        video {{
+            width: 100%;
+            max-height: 70vh;
+            display: block;
+            outline: none;
+            background: #000;
+        }}
+        .info-panel {{
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }}
+        .file-title {{
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #e2e8f0;
+            word-break: break-all;
+        }}
+        .actions {{
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }}
+        .btn {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: background 0.2s;
+            cursor: pointer;
+        }}
+        .btn-primary {{
+            background-color: #2563eb;
+            color: #ffffff;
+        }}
+        .btn-primary:hover {{ background-color: #1d4ed8; }}
+        .btn-secondary {{
+            background-color: #334155;
+            color: #cbd5e1;
+        }}
+        .btn-secondary:hover {{ background-color: #475569; }}
+    </style>
+</head>
+<body>
+    <div class="player-container">
+        <video controls autoplay name="media">
+            <source src="{stream_raw_url}" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+        <div class="info-panel">
+            <div class="file-title">📁 {filename}</div>
+            <div class="actions">
+                <a href="{download_raw_url}" class="btn btn-primary">📥 Download File</a>
+                <a href="{stream_raw_url}" target="_blank" class="btn btn-secondary">🔗 Direct Stream URL</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
+
 # Webhook Handler
 async def handle_webhook(request):
     try:
@@ -42,35 +133,28 @@ async def handle_webhook(request):
             message = data["message"]
             chat_id = message["chat"]["id"]
             
-            # Check for file attachments
             file_id = None
-            file_name = "file"
-            
             if "document" in message:
                 file_id = message["document"]["file_id"]
-                file_name = message["document"].get("file_name", "document")
             elif "video" in message:
                 file_id = message["video"]["file_id"]
-                file_name = message["video"].get("file_name", "video.mp4")
             elif "audio" in message:
                 file_id = message["audio"]["file_id"]
-                file_name = message["audio"].get("file_name", "audio.mp3")
             elif "photo" in message:
                 file_id = message["photo"][-1]["file_id"]
-                file_name = "photo.jpg"
 
             if file_id:
                 expires = int(time.time()) + 86400  # 24 Hours validity
                 token = generate_token(file_id, expires)
                 
-                stream_url = f"{BASE_URL}/stream?file_id={file_id}&expires={expires}&token={token}"
-                download_url = f"{stream_url}&d=true"
+                player_url = f"{BASE_URL}/watch?file_id={file_id}&expires={expires}&token={token}"
+                download_url = f"{BASE_URL}/stream?file_id={file_id}&expires={expires}&token={token}&d=true"
                 
                 reply_text = (
                     f"✨ **Link Generated Successfully!**\n\n"
-                    f"🔗 **Stream Link:** {stream_url}\n\n"
-                    f"📥 **Download Link:** {download_url}\n\n"
-                    f"⚠️ *Note: Bot API supports direct downloading for files up to 20MB only.*"
+                    f"🎬 **Web Video Player:** {player_url}\n\n"
+                    f"📥 **Direct Download Link:** {download_url}\n\n"
+                    f"⚠️ *Note: Standard Bot API supports files up to 20MB. For larger files, Client API (Pyrogram) mode is required.*"
                 )
                 
                 async with httpx.AsyncClient() as client:
@@ -83,14 +167,41 @@ async def handle_webhook(request):
                 async with httpx.AsyncClient() as client:
                     await client.post(f"{TELEGRAM_API}/sendMessage", json={
                         "chat_id": chat_id,
-                        "text": "Please send a file, video, audio, or document to generate links."
+                        "text": "Please send a video, audio, or document to generate streaming links."
                     })
         return web.Response(status=200)
     except Exception as e:
         logger.error(f"Error in webhook: {e}")
         return web.Response(status=500)
 
-# Stream / Download Handler
+# Web Video Player Page Handler
+async def handle_watch(request):
+    file_id = request.query.get("file_id")
+    expires = request.query.get("expires")
+    token = request.query.get("token")
+
+    if not file_id or not expires or not token:
+        return web.Response(text="Missing parameters", status=400)
+
+    try:
+        expires_int = int(expires)
+    except ValueError:
+        return web.Response(text="Invalid expiration parameter", status=400)
+
+    if not verify_token(file_id, expires_int, token):
+        return web.Response(text="Link expired or invalid token", status=403)
+
+    stream_raw_url = f"{BASE_URL}/stream?file_id={file_id}&expires={expires}&token={token}"
+    download_raw_url = f"{stream_raw_url}&d=true"
+    
+    html_content = HTML_PLAYER_TEMPLATE.format(
+        stream_raw_url=stream_raw_url,
+        download_raw_url=download_raw_url,
+        filename="Telegram Media File"
+    )
+    return web.Response(text=html_content, content_type="text/html")
+
+# Raw Stream / Download Handler
 async def handle_stream(request):
     file_id = request.query.get("file_id")
     expires = request.query.get("expires")
@@ -115,7 +226,7 @@ async def handle_stream(request):
         
         if not res_data.get("ok"):
             return web.Response(
-                text="Unable to fetch file path from Telegram. File might be larger than 20MB limit or deleted.", 
+                text="Unable to fetch file. File exceeds Telegram Bot API 20MB limit or was deleted.", 
                 status=404
             )
         
@@ -124,24 +235,19 @@ async def handle_stream(request):
     telegram_file_url = f"{TELEGRAM_FILE_API}/{file_path}"
     filename = os.path.basename(file_path)
 
-    # Stream the file from Telegram server to client
     session = ClientSession()
     tg_resp = await session.get(telegram_file_url)
 
     if tg_resp.status != 200:
         await session.close()
-        logger.error(f"Telegram file server returned {tg_resp.status}")
-        return web.Response(text="Telegram file server error or file > 20MB.", status=tg_resp.status)
+        return web.Response(text="Telegram file server error or file > 20MB limit.", status=tg_resp.status)
 
     headers = {}
     if is_download:
         headers["Content-Disposition"] = f'attachment; filename="{filename}"'
 
-    response = web.StreamResponse(
-        status=200,
-        headers=headers
-    )
-    response.content_type = tg_resp.content_type or "application/octet-stream"
+    response = web.StreamResponse(status=200, headers=headers)
+    response.content_type = tg_resp.content_type or "video/mp4"
     
     await response.prepare(request)
 
@@ -157,12 +263,12 @@ async def handle_stream(request):
 async def init_app():
     app = web.Application()
     
-    # Health check route
-    app.router.add_get("/", lambda r: web.Response(text="Bot Stream Server is Running!"))
-    app.router.add_head("/", lambda r: web.Response(status=200))
+    # Root route automatically handles GET and HEAD requests without crash
+    app.router.add_get("/", lambda r: web.Response(text="Bot Stream Server & Web Player is Running!"))
     
     # Main routes
     app.router.add_post(f"/{BOT_TOKEN}", handle_webhook)
+    app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
     
     # Set Webhook
