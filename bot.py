@@ -2,82 +2,89 @@ import os
 import time
 import hmac
 import hashlib
-import logging
-from aiohttp import web, ClientSession
-import httpx
+from dotenv import load_dotenv
+from aiohttp import web
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters as ptb_filters, ContextTypes
+from pyrogram import Client
 
-# Logging Configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+load_dotenv()
 
-# Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+API_ID = int(os.getenv("API_ID", 0))
+API_HASH = os.getenv("API_HASH")
+LOG_GROUP = int(os.getenv("LOG_GROUP", 0))
 PORT = int(os.getenv("PORT", 10000))
-SECRET_KEY = os.getenv("SECRET_KEY", "default_secret_key").encode()
+SECRET_KEY = os.getenv("SECRET_KEY", "super_secret_key").encode()
 
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable is missing!")
-
-# Automatically handle both BASE_URL or WEBHOOK_URL from environment
 raw_url = os.getenv("BASE_URL") or os.getenv("WEBHOOK_URL", "")
 BASE_URL = raw_url.rstrip("/")
-
-# If the user accidentally pasted the full webhook path (with token), strip it out to get the root domain
 if BASE_URL.endswith(BOT_TOKEN):
     BASE_URL = BASE_URL[:-len(BOT_TOKEN)].rstrip("/")
 
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-TELEGRAM_FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
+if not all([BOT_TOKEN, API_ID, API_HASH, LOG_GROUP, BASE_URL]):
+    raise ValueError("Missing mandatory environment variables: BOT_TOKEN, API_ID, API_HASH, LOG_GROUP, BASE_URL")
 
-# Helper: Generate Signed Token
-def generate_token(file_id: str, expires: int) -> str:
-    data = f"{file_id}:{expires}"
+tg_client = Client(
+    "StreamBotSession",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True
+)
+
+ptb_app = Application.builder().token(BOT_TOKEN).build()
+
+def generate_token(msg_id: int, expires: int) -> str:
+    data = f"{msg_id}:{expires}"
     return hmac.new(SECRET_KEY, data.encode(), hashlib.sha256).hexdigest()
 
-# Helper: Verify Token
-def verify_token(file_id: str, expires: int, token: str) -> bool:
+def verify_token(msg_id: int, expires: int, token: str) -> bool:
     if time.time() > expires:
         return False
-    expected_token = generate_token(file_id, expires)
+    expected_token = generate_token(msg_id, expires)
     return hmac.compare_digest(expected_token, token)
 
-# HTML Web Video Player Template
 HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stream Video - Web Player</title>
+    <title>{filename} - Web Player</title>
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
-            background-color: #0f172a;
-            color: #f8fafc;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0b0f19;
+            color: #f1f5f9;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            padding: 20px;
+            padding: 15px;
         }}
-        .player-container {{
+        .player-wrapper {{
             width: 100%;
-            max-width: 900px;
+            max-width: 950px;
             background: #1e293b;
-            border-radius: 12px;
+            border-radius: 14px;
             overflow: hidden;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+        }}
+        .video-container {{
+            width: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
         }}
         video {{
             width: 100%;
-            max-height: 70vh;
-            display: block;
-            outline: none;
-            background: #000;
+            max-height: 75vh;
+            transition: transform 0.3s ease;
         }}
         .info-panel {{
             padding: 20px;
@@ -85,255 +92,260 @@ HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
             flex-direction: column;
             gap: 15px;
         }}
-        .file-title {{
-            font-size: 1.1rem;
+        .title {{
+            font-size: 1.2rem;
             font-weight: 600;
-            color: #e2e8f0;
+            color: #f8fafc;
             word-break: break-all;
         }}
-        .actions {{
+        .controls-bar {{
             display: flex;
-            gap: 12px;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .buttons-group {{
+            display: flex;
+            gap: 10px;
             flex-wrap: wrap;
         }}
         .btn {{
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 10px 20px;
+            padding: 10px 18px;
             border-radius: 8px;
             font-weight: 600;
             text-decoration: none;
-            transition: background 0.2s;
             cursor: pointer;
+            border: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.95rem;
+            transition: all 0.2s;
         }}
         .btn-primary {{
-            background-color: #2563eb;
-            color: #ffffff;
+            background: #3b82f6;
+            color: #fff;
         }}
-        .btn-primary:hover {{ background-color: #1d4ed8; }}
+        .btn-primary:hover {{ background: #2563eb; }}
         .btn-secondary {{
-            background-color: #334155;
-            color: #cbd5e1;
+            background: #334155;
+            color: #e2e8f0;
         }}
-        .btn-secondary:hover {{ background-color: #475569; }}
+        .btn-secondary:hover {{ background: #475569; }}
+        .btn-rotate {{
+            background: #10b981;
+            color: #fff;
+        }}
+        .btn-rotate:hover {{ background: #059669; }}
     </style>
 </head>
 <body>
-    <div class="player-container">
-        <video controls autoplay name="media">
-            <source src="{stream_raw_url}" type="video/mp4">
-            Your browser does not support the video tag.
-        </video>
+    <div class="player-wrapper">
+        <div class="video-container">
+            <video id="player" controls crossorigin playsinline>
+                <source src="{stream_url}" type="video/mp4" />
+            </video>
+        </div>
         <div class="info-panel">
-            <div class="file-title">📁 {filename}</div>
-            <div class="actions">
-                <a href="{download_raw_url}" class="btn btn-primary">📥 Download File</a>
-                <a href="{stream_raw_url}" target="_blank" class="btn btn-secondary">🔗 Direct Stream URL</a>
+            <div class="title">🎬 {filename}</div>
+            <div class="controls-bar">
+                <div class="buttons-group">
+                    <a href="{download_url}" class="btn btn-primary">📥 Download File</a>
+                    <a href="{stream_url}" target="_blank" class="btn btn-secondary">🔗 Direct Stream</a>
+                </div>
+                <div class="buttons-group">
+                    <button id="rotateBtn" class="btn btn-rotate">🔄 Rotate: 0°</button>
+                </div>
             </div>
         </div>
     </div>
+
+    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+    <script>
+        const player = new Plyr('#player', {{
+            controls: [
+                'play-large', 'play', 'progress', 'current-time', 'duration',
+                'mute', 'volume', 'settings', 'pip', 'airplay', 'fullscreen'
+            ],
+            settings: ['speed'],
+            speed: {{ selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] }}
+        }});
+
+        let currentRotation = 0;
+        const videoElement = document.querySelector('video');
+        const rotateBtn = document.getElementById('rotateBtn');
+
+        rotateBtn.addEventListener('click', () => {{
+            currentRotation = (currentRotation + 90) % 360;
+            videoElement.style.transform = `rotate(${{currentRotation}}deg)`;
+            rotateBtn.textContent = `🔄 Rotate: ${{currentRotation}}°`;
+        }});
+    </script>
 </body>
 </html>"""
 
-# Send Message Helper
-async def send_message(chat_id: int, text: str):
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True
-            }
-        )
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome_text = (
+        "👋 **Welcome to Ultra-Fast Media Streamer Bot!**\n\n"
+        "🚀 Send me any **Video**, **Audio**, or **Document** (up to **2GB**).\n"
+        "⚡ I will generate an instant **Web Player**, **Stream Link**, and **Download Link** with high speed!"
+    )
+    await update.message.reply_markdown(welcome_text)
 
-# Webhook Handler
+async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    forwarded = await context.bot.forward_message(
+        chat_id=LOG_GROUP,
+        from_chat_id=update.effective_chat.id,
+        message_id=msg.message_id
+    )
+    msg_id = forwarded.message_id
+
+    media = msg.document or msg.video or msg.audio or (msg.photo[-1] if msg.photo else None)
+    filename = getattr(media, "file_name", "Telegram_Media_File.mp4")
+    real_caption = msg.caption or filename
+
+    expires = int(time.time()) + 86400
+    token = generate_token(msg_id, expires)
+
+    player_url = f"{BASE_URL}/watch?id={msg_id}&expires={expires}&token={token}"
+    download_url = f"{BASE_URL}/stream?id={msg_id}&expires={expires}&token={token}&d=true"
+
+    reply_text = (
+        f"✨ **Link Generated Successfully!**\n\n"
+        f"📁 **File:** `{filename}`\n"
+        f"💬 **Caption:** {real_caption}\n\n"
+        f"⚡ *Powered by PTB v22.8 & High-Speed MTProto*"
+    )
+
+    buttons = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🖥️ Watch Stream", url=player_url),
+            InlineKeyboardButton("📥 Download", url=download_url)
+        ]
+    ])
+
+    await msg.reply_markdown(reply_text, reply_markup=buttons, disable_web_page_preview=True)
+
+ptb_app.add_handler(CommandHandler(["start", "help"], start_command))
+ptb_app.add_handler(MessageHandler(
+    ptb_filters.Document.ALL | ptb_filters.VIDEO | ptb_filters.AUDIO | ptb_filters.PHOTO,
+    media_handler
+))
+
 async def handle_webhook(request):
     try:
         data = await request.json()
-        logger.info(f"Received update: {data}")
-
-        message = data.get("message") or data.get("channel_post")
-        if not message:
-            return web.Response(status=200)
-
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "")
-
-        # 1. Handle /start and /help Commands
-        if text.startswith("/start") or text.startswith("/help"):
-            welcome_text = (
-                "👋 **Welcome to File-to-Link & Stream Bot!**\n\n"
-                "🚀 *How to use me:*\n"
-                "• Send or forward any **Video**, **Audio**, or **Document**.\n"
-                "• I will generate an **Instant Web Video Player**, **Direct Stream Link**, and a **Download Link**!\n\n"
-                "⚠️ *Note: Due to Telegram Bot API limits, files must be under 20MB.*"
-            )
-            await send_message(chat_id, welcome_text)
-            return web.Response(status=200)
-
-        # 2. Check for media attachments
-        file_id = None
-        if "document" in message:
-            file_id = message["document"]["file_id"]
-        elif "video" in message:
-            file_id = message["video"]["file_id"]
-        elif "audio" in message:
-            file_id = message["audio"]["file_id"]
-        elif "photo" in message:
-            file_id = message["photo"][-1]["file_id"]
-
-        if file_id:
-            expires = int(time.time()) + 86400  # 24 Hours validity
-            token = generate_token(file_id, expires)
-            
-            player_url = f"{BASE_URL}/watch?file_id={file_id}&expires={expires}&token={token}"
-            download_url = f"{BASE_URL}/stream?file_id={file_id}&expires={expires}&token={token}&d=true"
-            
-            reply_text = (
-                f"✨ **Link Generated Successfully!**\n\n"
-                f"🎬 **Web Video Player:** [Click to Watch]({player_url})\n"
-                f"📥 **Download Link:** [Click to Download]({download_url})\n\n"
-                f"🔗 *Raw Watch URL:* `{player_url}`"
-            )
-            await send_message(chat_id, reply_text)
-        else:
-            await send_message(chat_id, "⚠️ Please send a valid Video, Audio, or Document file (under 20MB).")
-
+        update = Update.de_json(data, ptb_app.bot)
+        await ptb_app.process_update(update)
         return web.Response(status=200)
-    except Exception as e:
-        logger.error(f"Error in webhook handler: {e}")
+    except Exception:
         return web.Response(status=200)
 
-# Web Video Player Page Handler
 async def handle_watch(request):
-    file_id = request.query.get("file_id")
+    msg_id = request.query.get("id")
     expires = request.query.get("expires")
     token = request.query.get("token")
 
-    if not file_id or not expires or not token:
+    if not all([msg_id, expires, token]):
         return web.Response(text="Missing parameters", status=400)
 
     try:
+        msg_id_int = int(msg_id)
         expires_int = int(expires)
     except ValueError:
-        return web.Response(text="Invalid expiration parameter", status=400)
+        return web.Response(text="Invalid parameters", status=400)
 
-    if not verify_token(file_id, expires_int, token):
+    if not verify_token(msg_id_int, expires_int, token):
         return web.Response(text="Link expired or invalid token", status=403)
 
-    stream_raw_url = f"{BASE_URL}/stream?file_id={file_id}&expires={expires}&token={token}"
-    download_raw_url = f"{stream_raw_url}&d=true"
-    
+    msg = await tg_client.get_messages(LOG_GROUP, msg_id_int)
+    media = msg.document or msg.video or msg.audio or (msg.photo[-1] if msg.photo else None)
+    filename = getattr(media, "file_name", "Telegram_Media_File.mp4")
+
+    stream_url = f"{BASE_URL}/stream?id={msg_id}&expires={expires}&token={token}"
+    download_url = f"{stream_url}&d=true"
+
     html_content = HTML_PLAYER_TEMPLATE.format(
-        stream_raw_url=stream_raw_url,
-        download_raw_url=download_raw_url,
-        filename="Telegram Media File"
+        stream_url=stream_url,
+        download_url=download_url,
+        filename=filename
     )
     return web.Response(text=html_content, content_type="text/html")
 
-# Raw Stream / Download Handler
 async def handle_stream(request):
-    file_id = request.query.get("file_id")
+    msg_id = request.query.get("id")
     expires = request.query.get("expires")
     token = request.query.get("token")
     is_download = request.query.get("d") == "true"
 
-    if not file_id or not expires or not token:
+    if not all([msg_id, expires, token]):
         return web.Response(text="Missing parameters", status=400)
 
     try:
+        msg_id_int = int(msg_id)
         expires_int = int(expires)
     except ValueError:
-        return web.Response(text="Invalid expiration parameter", status=400)
+        return web.Response(text="Invalid parameters", status=400)
 
-    if not verify_token(file_id, expires_int, token):
+    if not verify_token(msg_id_int, expires_int, token):
         return web.Response(text="Link expired or invalid token", status=403)
 
-    async with httpx.AsyncClient() as client:
-        res = await client.post(f"{TELEGRAM_API}/getFile", json={"file_id": file_id})
-        res_data = res.json()
-        
-        if not res_data.get("ok"):
-            return web.Response(
-                text="404: Unable to fetch file. Either it exceeds the 20MB Bot API limit or is deleted.", 
-                status=404
-            )
-        
-        file_path = res_data["result"]["file_path"]
+    msg = await tg_client.get_messages(LOG_GROUP, msg_id_int)
+    media = msg.document or msg.video or msg.audio or (msg.photo[-1] if msg.photo else None)
+    
+    if not media:
+        return web.Response(text="Media not found or deleted from Log Group", status=404)
 
-    telegram_file_url = f"{TELEGRAM_FILE_API}/{file_path}"
-    filename = os.path.basename(file_path)
+    filename = getattr(media, "file_name", "Telegram_Media_File.mp4")
+    file_size = getattr(media, "file_size", 0)
+    mime_type = getattr(media, "mime_type", "video/mp4")
 
-    session = ClientSession()
-    tg_resp = await session.get(telegram_file_url)
-
-    if tg_resp.status != 200:
-        await session.close()
-        return web.Response(text="Telegram file server error or file > 20MB limit.", status=tg_resp.status)
-
-    headers = {}
+    headers = {
+        "Content-Type": mime_type,
+        "Content-Length": str(file_size)
+    }
     if is_download:
         headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    else:
+        headers["Content-Disposition"] = f'inline; filename="{filename}"'
 
     response = web.StreamResponse(status=200, headers=headers)
-    response.content_type = tg_resp.content_type or "video/mp4"
-    
     await response.prepare(request)
 
-    try:
-        async for chunk in tg_resp.content.iter_chunked(64 * 1024):
-            await response.write(chunk)
-    finally:
-        await session.close()
+    async for chunk in tg_client.stream_media(msg):
+        await response.write(chunk)
 
     return response
 
-# Manual Webhook Set Route
 async def handle_setwebhook(request):
-    if not BASE_URL:
-        return web.Response(text="❌ Neither BASE_URL nor WEBHOOK_URL environment variable is set!", status=400)
-    
     webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
-    async with httpx.AsyncClient() as client:
-        res = await client.post(f"{TELEGRAM_API}/setWebhook", json={"url": webhook_url})
-        data = res.json()
-    return web.json_response(data)
+    res = await ptb_app.bot.set_webhook(url=webhook_url)
+    return web.json_response({"ok": res, "url": webhook_url})
 
-# Telegram Webhook Status Route
-async def handle_status(request):
-    async with httpx.AsyncClient() as client:
-        res = await client.post(f"{TELEGRAM_API}/getWebhookInfo")
-        data = res.json()
-    return web.json_response(data)
-
-# App Initialization & Automatic Webhook Registration
 async def init_app():
     app = web.Application()
-    
-    # Routes
-    app.router.add_get("/", lambda r: web.Response(text="✅ Bot Stream Server & Web Player is Running!"))
+    app.router.add_get("/", lambda r: web.Response(text="PTB v22.8 + Pyrogram 2GB Stream Server is Live!"))
     app.router.add_post(f"/{BOT_TOKEN}", handle_webhook)
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
-    
-    # Diagnostic / Helper Routes
     app.router.add_get("/setwebhook", handle_setwebhook)
-    app.router.add_get("/status", handle_status)
-    
-    # Register Webhook on startup
+
     async def on_startup(app):
-        if BASE_URL:
-            webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
-            async with httpx.AsyncClient() as client:
-                res = await client.post(f"{TELEGRAM_API}/setWebhook", json={"url": webhook_url})
-                logger.info(f"Startup Webhook Set Result: {res.json()}")
-        else:
-            logger.warning("Neither BASE_URL nor WEBHOOK_URL found! Webhook was not set automatically.")
+        await ptb_app.initialize()
+        await ptb_app.start()
+        await tg_client.start()
+        webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
+        await ptb_app.bot.set_webhook(url=webhook_url)
+
+    async def on_shutdown(app):
+        await ptb_app.stop()
+        await ptb_app.shutdown()
+        await tg_client.stop()
 
     app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
     return app
 
 if __name__ == "__main__":
