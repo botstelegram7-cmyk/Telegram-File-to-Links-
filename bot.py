@@ -9,11 +9,19 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from pyrogram import Client
 import asyncio
 
+# Import config – handle SESSION_STRING missing gracefully
 from config import (
     BOT_TOKEN, API_ID, API_HASH, LOG_GROUP, ADMIN_ID,
-    PORT, MONGO_URI, DB_NAME, AUTO_DELETE_TIME, START_PIC, BASE_URL,
-    SESSION_STRING  # new optional variable
+    PORT, MONGO_URI, DB_NAME, AUTO_DELETE_TIME, START_PIC, BASE_URL
 )
+try:
+    from config import SESSION_STRING
+except ImportError:
+    SESSION_STRING = ""
+
+# If SESSION_STRING is "0" or empty, treat as not set
+if not SESSION_STRING or SESSION_STRING == "0":
+    SESSION_STRING = ""
 
 # --- MONGODB ---
 mongo_client = AsyncIOMotorClient(MONGO_URI)
@@ -30,8 +38,8 @@ if SESSION_STRING:
         api_hash=API_HASH,
         in_memory=True
     )
+    print("✅ Using persistent session string.")
 else:
-    # Fallback to bot token – but will cause FloodWait on repeated starts
     tg_client = Client(
         "File2LinksSession",
         api_id=API_ID,
@@ -39,6 +47,7 @@ else:
         bot_token=BOT_TOKEN,
         in_memory=True
     )
+    print("ℹ️ Using bot token for Pyrogram (may cause flood waits on repeated starts).")
 
 pyrogram_ready = False  # flag to indicate client is ready
 
@@ -48,7 +57,7 @@ ptb_app = Application.builder().token(BOT_TOKEN).build()
 FSUB_CHANNEL = "serenaunzipbot"
 FSUB_LINK = "https://t.me/serenaunzipbot"
 
-# --- HTML TEMPLATES (same as before) ---
+# --- HTML TEMPLATES (unchanged) ---
 GENERIC_WEB_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
