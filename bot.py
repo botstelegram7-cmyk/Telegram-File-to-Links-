@@ -308,14 +308,16 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 **Uploaded By:** [{user.full_name}]({profile_url}) `({user.id})`"
     )
 
-    log_msg = await tg_client.send_cached_media(
+    log_msg = await context.bot.copy_message(
         chat_id=LOG_GROUP,
-        file_id=media.file_id,
-        caption=log_caption
+        from_chat_id=update.effective_chat.id,
+        message_id=msg.message_id,
+        caption=log_caption,
+        parse_mode=ParseMode.MARKDOWN
     )
 
     file_doc = {
-        "msg_id": log_msg.id,
+        "msg_id": log_msg.message_id,
         "user_id": user.id,
         "filename": filename,
         "caption": original_caption,
@@ -323,8 +325,8 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await files_col.insert_one(file_doc)
 
-    watch_url = f"{BASE_URL}/watch?id={log_msg.id}"
-    download_url = f"{BASE_URL}/stream?id={log_msg.id}&d=true"
+    watch_url = f"{BASE_URL}/watch?id={log_msg.message_id}"
+    download_url = f"{BASE_URL}/stream?id={log_msg.message_id}&d=true"
 
     reply_text = (
         f"✨ **Permanent Stream & Download Ready!**\n\n"
@@ -338,7 +340,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
         [
             InlineKeyboardButton("📥 Download File", url=download_url),
-            InlineKeyboardButton("🔗 Direct URL", url=f"{BASE_URL}/stream?id={log_msg.id}")
+            InlineKeyboardButton("🔗 Direct URL", url=f"{BASE_URL}/stream?id={log_msg.message_id}")
         ]
     ])
 
