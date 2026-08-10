@@ -32,11 +32,7 @@ def generate_stream_link(file_id: str, download: bool = False, validity_hours: i
     expire_ts = int(time.time() + validity_hours * 3600)
     message = f"{file_id}|{expire_ts}".encode()
     token = hmac.new(config.STREAM_SECRET.encode(), message, hashlib.sha256).hexdigest()
-    params = {
-        "file_id": file_id,
-        "expires": expire_ts,
-        "token": token,
-    }
+    params = {"file_id": file_id, "expires": expire_ts, "token": token}
     if download:
         params["d"] = "true"
     return f"{config.WEBHOOK_URL}/stream?{urlencode(params)}"
@@ -76,9 +72,15 @@ async def handle_stream(request: web.Request):
 
     # Stream / download the file
     try:
-        timeout = ClientTimeout(total=120)  # 2 minutes for large files
+        timeout = ClientTimeout(total=120)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(telegram_url) as resp:
+                if resp.status == 404:
+                    logger.error("Telegram file server returned 404 – file no longer exists")
+                    return web.Response(
+                        status=404,
+                        text="File not available anymore. Send a new video to get fresh links.",
+                    )
                 if resp.status != 200:
                     logger.error(f"Telegram file server returned {resp.status}")
                     return web.Response(
