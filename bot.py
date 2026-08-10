@@ -1,7 +1,6 @@
 import time
 import os
 import asyncio
-import signal
 import aiohttp
 from aiohttp import web
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -15,51 +14,28 @@ from config import (
     PORT, MONGO_URI, DB_NAME, START_PIC, BASE_URL
 )
 
-# Optional: import SESSION_STRING if available; otherwise set to empty
-try:
-    from config import SESSION_STRING
-except ImportError:
-    SESSION_STRING = ""
-
-# Treat "0" or empty string as not set
-if not SESSION_STRING or SESSION_STRING == "0":
-    SESSION_STRING = ""
-
-# --- MONGODB ---
+# --- MONGODB CONFIGURATION ---
 mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client[DB_NAME]
 files_col = db["stream_files"]
 users_col = db["users"]
 
-# --- PYROGRAM CLIENT ---
-if SESSION_STRING:
-    tg_client = Client(
-        "File2LinksSession",
-        session_string=SESSION_STRING,
-        api_id=API_ID,
-        api_hash=API_HASH,
-        in_memory=True
-    )
-    print("✅ Using persistent session string.")
-else:
-    tg_client = Client(
-        "File2LinksSession",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        bot_token=BOT_TOKEN,
-        in_memory=True
-    )
-    print("ℹ️ Using bot token for Pyrogram (may cause flood waits on repeated starts).")
+# --- PYROGRAM CLIENT FOR MEDIA STREAMING ---
+tg_client = Client(
+    "File2LinksSession",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    in_memory=True
+)
 
-pyrogram_ready = False
-
-# --- PTB APP ---
+# --- PYTHON TELEGRAM BOT APPLICATION ---
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 
 FSUB_CHANNEL = "serenaunzipbot"
 FSUB_LINK = "https://t.me/serenaunzipbot"
 
-# --- HTML TEMPLATES (unchanged) ---
+# --- HTML TEMPLATES ---
 GENERIC_WEB_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -186,7 +162,6 @@ VIDEO_PLAYER_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
-# --- HELPER FUNCTIONS (unchanged) ---
 async def send_raw_telegram_message(chat_id, text, reply_markup=None, photo_url=None):
     async with aiohttp.ClientSession() as session:
         payload = {
@@ -221,7 +196,6 @@ async def save_user(user):
         upsert=True
     )
 
-# --- COMMAND HANDLERS (unchanged) ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await save_user(user)
@@ -405,7 +379,6 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await message.reply_html(reply_text, reply_markup=buttons, disable_web_page_preview=True)
 
-# --- WEB HANDLERS ---
 async def handle_watch(request):
     msg_id_str = request.query.get("id")
     if not msg_id_str or not msg_id_str.isdigit():
@@ -441,10 +414,6 @@ async def handle_watch(request):
     return web.Response(text=html_content, content_type="text/html")
 
 async def handle_stream(request):
-    global pyrogram_ready
-    if not pyrogram_ready:
-        return web.Response(text="Pyrogram client is not ready yet. Please try again later.", status=503)
-
     msg_id_str = request.query.get("id")
     is_download = request.query.get("d") == "true"
 
@@ -494,19 +463,16 @@ async def handle_stream(request):
     except Exception as e:
         return web.Response(text=f"Stream Error: {str(e)}", status=500)
 
-# --- PROPER WEBHOOK HANDLER ---
+# --- SECURE ASYNCHRONOUS WEBHOOK WRAPPER ---
 async def webhook_handler(request):
-    """Receive Telegram update and feed it to PTB."""
     try:
         data = await request.json()
         update = Update.de_json(data, ptb_app.bot)
-        await ptb_app.process_update(update)
-        return web.Response(status=200)
+        await ptb_app.update_queue.put(update)
+        return web.Response(text="OK")
     except Exception as e:
-        print(f"Webhook error: {e}")
-        return web.Response(status=500)
+        return web.Response(text=f"Error: {str(e)}", status=500)
 
-# --- REGISTER HANDLERS ---
 ptb_app.add_handler(CommandHandler("start", start_command))
 ptb_app.add_handler(CommandHandler("clear", clear_command))
 ptb_app.add_handler(CommandHandler("broadcast", broadcast_command))
@@ -516,72 +482,34 @@ ptb_app.add_handler(MessageHandler(
     media_handler
 ))
 
-# --- BACKGROUND TASK TO START PYROGRAM ---
-async def start_pyrogram():
-    global pyrogram_ready
-    max_retries = 5
-    retry_delay = 60  # seconds
-    for attempt in range(1, max_retries + 1):
-        try:
-            await tg_client.start()
-            pyrogram_ready = True
-            print("✅ Pyrogram client started successfully.")
-            return
-        except Exception as e:
-            print(f"⚠️ Pyrogram start attempt {attempt} failed: {e}")
-            if attempt < max_retries:
-                print(f"Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-            else:
-                print("❌ Failed to start Pyrogram after multiple attempts.")
-
-# --- MAIN ENTRY POINT ---
 async def main():
-    # Create aiohttp app and add all routes BEFORE runner setup
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="File 2 Links Production Server Online."))
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
-    app.router.add_post(f"/{BOT_TOKEN}", webhook_handler)   # proper handler
+    
+    if BASE_URL:
+        app.router.add_post(f"/{BOT_TOKEN}", webhook_handler)
 
-    # Start web server
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
 
-    # Initialize PTB (but not its built-in webhook)
     await ptb_app.initialize()
     await ptb_app.start()
+    await tg_client.start()
 
-    # Set webhook on Telegram (use our endpoint)
-    webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
-    await ptb_app.bot.set_webhook(url=webhook_url)
-    print(f"✅ Webhook set to {webhook_url}")
+    if BASE_URL:
+        webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
+        await ptb_app.bot.set_webhook(url=webhook_url)
 
-    # Start Pyrogram in background (avoids blocking)
-    asyncio.create_task(start_pyrogram())
+    print(f"🚀 Service fully running on port {PORT} and loop synchronized!")
 
-    print(f"🚀 Service running on port {PORT}")
-
-    # Graceful shutdown on SIGINT/SIGTERM
-    loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
-
-    await stop_event.wait()
-
-    # Cleanup
-    print("🛑 Shutting down...")
-    await ptb_app.bot.delete_webhook()
-    await ptb_app.stop()
-    await ptb_app.shutdown()
-    if pyrogram_ready:
-        await tg_client.stop()
-    await runner.cleanup()
-    mongo_client.close()
-    print("✅ Shutdown complete.")
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
