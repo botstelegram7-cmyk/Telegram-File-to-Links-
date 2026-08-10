@@ -5,6 +5,7 @@ import logging
 import time
 from urllib.parse import urlencode
 
+import aiohttp
 from aiohttp import web
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -84,6 +85,7 @@ async def handle_stream(request: web.Request):
         return web.Response(status=404, text="File not found")
 
     try:
+        # FIX: use aiohttp.ClientSession properly
         async with aiohttp.ClientSession() as session:
             async with session.get(telegram_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 if resp.status != 200:
