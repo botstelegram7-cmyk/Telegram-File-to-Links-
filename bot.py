@@ -36,7 +36,7 @@ HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{filename} - MX Web Player</title>
+    <title>{filename} - Web Player</title>
     <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -66,24 +66,9 @@ HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
             position: relative;
             touch-action: none;
         }}
-        video {{
+        video, audio {{
             width: 100%;
             max-height: 75vh;
-            filter: brightness(1);
-            transition: transform 0.3s ease;
-        }}
-        .gesture-toast {{
-            position: absolute;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.75);
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-weight: bold;
-            display: none;
-            z-index: 50;
-            pointer-events: none;
         }}
         .info-panel {{
             padding: 20px;
@@ -150,14 +135,13 @@ HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="player-wrapper">
-        <div class="video-container" id="touchArea">
-            <div id="gestureToast" class="gesture-toast"></div>
+        <div class="video-container">
             <video id="player" controls crossorigin playsinline>
-                <source src="{stream_url}" type="video/mp4" />
+                <source src="{stream_url}" />
             </video>
         </div>
         <div class="info-panel">
-            <div class="title">🎬 {filename}</div>
+            <div class="title">📁 {filename}</div>
             <div class="actions">
                 <a href="{download_url}" class="btn btn-download">📥 Instant Download</a>
                 <a href="{stream_url}" target="_blank" class="btn btn-stream">🔗 Direct URL</a>
@@ -166,7 +150,7 @@ HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="playlist-container">
-        <div class="playlist-header">📺 Your Recent Videos (Newest Top)</div>
+        <div class="playlist-header">📺 Your Recent Files</div>
         <div id="playlist">
             {playlist_html}
         </div>
@@ -174,157 +158,7 @@ HTML_PLAYER_TEMPLATE = """<!DOCTYPE html>
 
     <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
     <script>
-        const player = new Plyr('#player', {{
-            controls: [
-                'play-large', 'play', 'progress', 'current-time', 'duration',
-                'mute', 'volume', 'settings', 'pip', 'airplay', 'fullscreen'
-            ],
-            settings: ['speed'],
-            speed: {{ selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2] }}
-        }});
-
-        const touchArea = document.getElementById('touchArea');
-        const videoElement = document.querySelector('video');
-        const toast = document.getElementById('gestureToast');
-
-        let startY = 0;
-        let startX = 0;
-        let currentBrightness = 1;
-
-        function showToast(text) {{
-            toast.textContent = text;
-            toast.style.display = 'block';
-            clearTimeout(window.toastTimer);
-            window.toastTimer = setTimeout(() => {{ toast.style.display = 'none'; }}, 1000);
-        }}
-
-        touchArea.addEventListener('touchstart', (e) => {{
-            if (e.touches.length === 1) {{
-                startY = e.touches[0].clientY;
-                startX = e.touches[0].clientX;
-            }}
-        }});
-
-        touchArea.addEventListener('touchmove', (e) => {{
-            if (e.touches.length === 1) {{
-                const deltaY = (startY - e.touches[0].clientY) / 150;
-                const screenWidth = window.innerWidth;
-
-                if (startX < screenWidth / 2) {{
-                    currentBrightness = Math.min(2, Math.max(0.2, currentBrightness + deltaY * 0.05));
-                    videoElement.style.filter = `brightness(${{currentBrightness}})`;
-                    showToast(`☀️ Brightness: ${{Math.round(currentBrightness * 100)}}%`);
-                }} else {{
-                    player.volume = Math.min(1, Math.max(0, player.volume + deltaY * 0.05));
-                    showToast(`🔊 Volume: ${{Math.round(player.volume * 100)}}%`);
-                }}
-                startY = e.touches[0].clientY;
-            }}
-        }});
-    </script>
-</body>
-</html>"""
-
-MX_REDIRECT_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Streaming in MX Player...</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            background: radial-gradient(circle at top, #1e293b, #0f172a);
-            color: #f8fafc;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            padding: 20px;
-        }}
-        .card {{
-            background: rgba(30, 41, 59, 0.8);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(16px);
-            padding: 35px 30px;
-            border-radius: 20px;
-            text-align: center;
-            max-width: 440px;
-            width: 100%;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
-        }}
-        .logo {{
-            width: 70px;
-            height: 70px;
-            margin: 0 auto 15px;
-            background: #3b82f6;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 32px;
-        }}
-        h2 {{
-            font-size: 1.5rem;
-            margin-bottom: 10px;
-            color: #38bdf8;
-        }}
-        p {{
-            color: #94a3b8;
-            font-size: 0.95rem;
-            line-height: 1.5;
-            margin-bottom: 25px;
-        }}
-        .btn {{
-            display: block;
-            width: 100%;
-            padding: 14px;
-            margin-bottom: 12px;
-            border-radius: 12px;
-            font-weight: 600;
-            text-decoration: none;
-            transition: all 0.2s;
-            color: #fff;
-        }}
-        .btn-primary {{
-            background: #2563eb;
-            box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
-        }}
-        .btn-primary:hover {{ background: #1d4ed8; }}
-        .btn-pro {{
-            background: #059669;
-            box-shadow: 0 4px 14px rgba(5, 150, 105, 0.4);
-        }}
-        .btn-pro:hover {{ background: #047857; }}
-        .btn-web {{
-            background: #334155;
-        }}
-        .btn-web:hover {{ background: #475569; }}
-        .status {{
-            margin-top: 15px;
-            font-size: 0.85rem;
-            color: #64748b;
-        }}
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="logo">🎬</div>
-        <h2>Opening MX Player...</h2>
-        <p>If MX Player is installed on your Android device, playback will begin automatically.</p>
-        <a id="mxAdBtn" href="{mx_ad_intent}" class="btn btn-primary">🟢 Open MX Player (Free)</a>
-        <a id="mxProBtn" href="{mx_pro_intent}" class="btn btn-pro">🟢 Open MX Player (Pro)</a>
-        <a href="{web_url}" class="btn btn-web">🔵 Watch in Web Player</a>
-        <div class="status" id="statusText">Attempting automatic redirect...</div>
-    </div>
-    <script>
-        window.addEventListener('DOMContentLoaded', () => {{
-            setTimeout(() => {{
-                document.getElementById('statusText').innerText = 'Redirecting to MX Player...';
-                window.location.href = "{mx_ad_intent}";
-            }}, 800);
-        }});
+        const player = new Plyr('#player');
     </script>
 </body>
 </html>"""
@@ -362,23 +196,22 @@ async def save_user(user):
     )
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "private":
+        return  # Groups me start command handle nahi hogi
+    
     await save_user(update.effective_user)
     welcome_text = (
         f"👋 <b>Hello {update.effective_user.first_name}!</b>\n\n"
-        "🎬 <b>MX Ultra Streamer Bot</b> is Ready!\n"
-        "⚡ Send me any <b>Video, Audio, or Document</b> (up to 2GB).\n\n"
-        "<blockquote>🌟 <b>Features:</b>\n"
-        "• High-Speed Stream & Download Links\n"
-        "• YouTube-Style Recent Video Playlist\n"
-        "• Mobile Swipe Gestures (Brightness & Volume)\n"
-        "• Permanent Cloud Storage via MongoDB</blockquote>"
+        f"⚡ <b>Media Streamer & Downloader Bot</b> is Active!\n"
+        f"<blockquote>Send me any Video, Audio, Photo, or Document to get instant links.</blockquote>"
     )
 
+    # Using native inline button styles (primary, success, danger) supported in PTB/Bot API
     buttons = {
         "inline_keyboard": [
             [
-                {"text": "🟢 ✨ Web App Streamer", "web_app": {"url": f"{BASE_URL}"}},
-                {"text": "🔵 📖 Help Guide", "callback_data": "help"}
+                {"text": "✨ Open Web App", "web_app": {"url": f"{BASE_URL}"}, "style": "primary"},
+                {"text": "📖 Help Guide", "callback_data": "help", "style": "success"}
             ]
         ]
     }
@@ -392,39 +225,34 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "📖 <b>How To Use MX Streamer Bot:</b>\n\n"
-        "<blockquote>1️⃣ Simply forward or send any media file here.\n"
-        "2️⃣ I will upload it safely and generate Permanent Links.\n"
-        "3️⃣ In the Video Player:\n"
-        "    • <b>Swipe Left (Up/Down):</b> Adjust Brightness ☀️\n"
-        "    • <b>Swipe Right (Up/Down):</b> Adjust Volume 🔊\n"
-        "    • <b>Below Player:</b> Your recent videos appear like a playlist!</blockquote>"
+        "📖 <b>Bot Assistance Guide:</b>\n\n"
+        "<blockquote>• Send Videos/Audio to get both <b>Streaming</b> & <b>Download</b> links.\n"
+        "• Send Photos, Zips, or Documents to get direct <b>Download</b> & <b>Web View</b> links.\n"
+        "• In groups, tag or mention the bot along with your file/command to trigger it.</blockquote>"
     )
     buttons = {
         "inline_keyboard": [
-            [{"text": "⚡ Close Help", "callback_data": "close"}]
+            [{"text": "❌ Close Guide", "callback_data": "close", "style": "danger"}]
         ]
     }
     await send_raw_telegram_message(update.effective_chat.id, help_text, buttons)
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
         return
 
     result = await files_col.delete_many({})
     await update.message.reply_text(
-        f"🗑️ <b>Database Cleared!</b>\n\n✅ Permanently deleted <code>{result.deleted_count}</code> saved files from MongoDB.",
+        f"🗑️ <b>Database Cleared!</b> Deleted <code>{result.deleted_count}</code> files.",
         parse_mode=ParseMode.HTML
     )
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
         return
 
     if not update.message.reply_to_message:
-        await update.message.reply_text("⚠️ Reply to any message with `/broadcast` to send it to all users.")
+        await update.message.reply_text("⚠️ Reply to any message to broadcast.")
         return
 
     sent = 0
@@ -439,28 +267,62 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             continue
 
-    await update.message.reply_text(f"✅ Broadcast completed! Sent to {sent} saved users.")
+    await update.message.reply_text(f"✅ Broadcast sent successfully to {sent} users.")
 
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    chat = update.effective_chat
     user = update.effective_user
+
+    # Group restriction: Agar group me hai toh jab tak bot mention/reply na ho, tab tak ignore karega
+    if chat.type in ["group", "supergroup"]:
+        bot_user = context.bot.username
+        is_mentioned = False
+        
+        if message.text or message.caption:
+            text_content = message.text or message.caption
+            if f"@{bot_user}" in text_content:
+                is_mentioned = True
+                
+        if message.reply_to_message and message.reply_to_message.from_user.id == context.bot.id:
+            is_mentioned = True
+            
+        if not is_mentioned:
+            return  # Mention nahi kiya toh process nahi karega
+
     await save_user(user)
-    msg = update.effective_message
 
-    media = msg.document or msg.video or msg.audio or (msg.photo[-1] if msg.photo else None)
-    filename = getattr(media, "file_name", f"Video_{int(time.time())}.mp4")
-    original_caption = msg.caption or ""
+    media = message.document or message.video or message.audio or (message.photo[-1] if message.photo else None)
+    if not media:
+        return
 
+    # Check file type category
+    is_video_audio = bool(message.video or message.audio)
+    
+    filename = getattr(media, "file_name", None)
+    if not filename:
+        if message.photo:
+            filename = f"Photo_{int(time.time())}.jpg"
+        elif message.video:
+            filename = f"Video_{int(time.time())}.mp4"
+        elif message.audio:
+            filename = f"Audio_{int(time.time())}.mp3"
+        else:
+            filename = f"Document_{int(time.time())}"
+
+    original_caption = message.caption or ""
     profile_url = f"https://t.me/{user.username}" if user.username else f"tg://user?id={user.id}"
+    
     log_caption = (
-        f"📁 <b>File:</b> <code>{filename}</code>\n"
+        f"📁 <b>File Name:</b> <code>{filename}</code>\n"
         f"📝 <b>Caption:</b> {original_caption}\n\n"
-        f"👤 <b>Uploaded By:</b> <a href=\"{profile_url}\">{user.full_name}</a> (<code>{user.id}</code>)"
+        f"👤 <b>User:</b> <a href=\"{profile_url}\">{user.full_name}</a> (<code>{user.id}</code>)"
     )
 
     log_msg = await context.bot.copy_message(
         chat_id=LOG_GROUP,
-        from_chat_id=update.effective_chat.id,
-        message_id=msg.message_id,
+        from_chat_id=chat.id,
+        message_id=message.message_id,
         caption=log_caption,
         parse_mode=ParseMode.HTML
     )
@@ -474,7 +336,6 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     await files_col.insert_one(file_doc)
 
-    mx_url = f"{BASE_URL}/mx?id={log_msg.message_id}"
     watch_url = f"{BASE_URL}/watch?id={log_msg.message_id}"
     download_url = f"{BASE_URL}/stream?id={log_msg.message_id}&d=true"
     direct_url = f"{BASE_URL}/stream?id={log_msg.message_id}"
@@ -483,30 +344,39 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stream_path = f"{raw_domain_path}/stream?id={log_msg.message_id}"
     mx_intent_link = f"intent://{stream_path}#Intent;scheme=https;type=video/*;package=com.mxtech.videoplayer.ad;end"
 
-    reply_text = (
-        f"✨ <b>Permanent Stream & Download Ready!</b>\n\n"
-        f"🎬 <b>File:</b> <code>{filename}</code>\n\n"
-        f"<blockquote>📋 <b>Copyable Links (Tap to Copy):</b>\n"
-        f"🔗 <b>Direct Stream URL:</b>\n<code>{direct_url}</code>\n\n"
-        f"📥 <b>Instant Download URL:</b>\n<code>{download_url}</code>\n\n"
-        f"📱 <b>MX Player Android Intent:</b>\n<code>{mx_intent_link}</code></blockquote>\n\n"
-        f"💡 <i>Tip: Click MX Player button below to stream directly inside Android app!</i>"
-    )
+    # Rich formatted response message with copyable block text links
+    if is_video_audio:
+        reply_text = (
+            f"✨ <b>Media Links Generated Successfully!</b>\n\n"
+            f"🎬 <b>File:</b> <code>{filename}</code>\n\n"
+            f"<blockquote>📋 <b>Copyable Links (Tap to Copy):</b>\n"
+            f"🔗 <b>Direct Stream URL:</b>\n<code>{direct_url}</code>\n\n"
+            f"📥 <b>Instant Download URL:</b>\n<code>{download_url}</code>\n\n"
+            f"📱 <b>MX Player Android Intent:</b>\n<code>{mx_intent_link}</code></blockquote>"
+        )
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🟢 Play in MX Player", url=f"{BASE_URL}/mx?id={log_msg.message_id}", style="success")],
+            [InlineKeyboardButton("🔵 Watch Web Player", url=watch_url, style="primary")],
+            [
+                InlineKeyboardButton("📥 Download", url=download_url, style="primary"),
+                InlineKeyboardButton("🔗 Direct URL", url=direct_url, style="success")
+            ]
+        ])
+    else:
+        # Photos, Documents, Zips etc. -> No streaming option, only Download and Web view/preview
+        reply_text = (
+            f"📁 <b>Document/File Processed Successfully!</b>\n\n"
+            f"📄 <b>File:</b> <code>{filename}</code>\n\n"
+            f"<blockquote>📋 <b>Copyable Links (Tap to Copy):</b>\n"
+            f"📥 <b>Download URL:</b>\n<code>{download_url}</code>\n\n"
+            f"🌐 <b>Web View URL:</b>\n<code>{watch_url}</code></blockquote>"
+        )
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Download File", url=download_url, style="success")],
+            [InlineKeyboardButton("🌐 Web View", url=watch_url, style="primary")]
+        ])
 
-    buttons = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🟢 Play in MX Player (App)", url=mx_url)
-        ],
-        [
-            InlineKeyboardButton("🔵 Watch in Web Player", url=watch_url)
-        ],
-        [
-            InlineKeyboardButton("📥 Instant Download", url=download_url),
-            InlineKeyboardButton("🔗 Direct URL", url=direct_url)
-        ]
-    ])
-
-    await msg.reply_html(reply_text, reply_markup=buttons, disable_web_page_preview=True)
+    await message.reply_html(reply_text, reply_markup=buttons, disable_web_page_preview=True)
 
 ptb_app.add_handler(CommandHandler("start", start_command))
 ptb_app.add_handler(CommandHandler("help", help_command))
@@ -534,12 +404,7 @@ async def handle_watch(request):
     msg_id = int(msg_id_str)
     file_doc = await files_col.find_one({"msg_id": msg_id})
     if not file_doc:
-        return web.Response(text="File not found in Database or Expired", status=404)
-
-    if AUTO_DELETE_TIME > 0:
-        if int(time.time()) > file_doc["created_at"] + AUTO_DELETE_TIME:
-            await files_col.delete_one({"msg_id": msg_id})
-            return web.Response(text="Link Expired (Auto Delete Timer Triggered)", status=403)
+        return web.Response(text="File not found or expired", status=404)
 
     user_id = file_doc["user_id"]
     playlist_cursor = files_col.find({"user_id": user_id}).sort("created_at", -1).limit(10)
@@ -550,8 +415,8 @@ async def handle_watch(request):
         item_url = f"{BASE_URL}/watch?id={item['msg_id']}"
         playlist_html += (
             f'<a href="{item_url}" class="playlist-item {active_class}">'
-            f'<span>🎬 {item["filename"]}</span>'
-            f'<span>▶️ Play</span>'
+            f'<span>📁 {item["filename"]}</span>'
+            f'<span>🔍 View</span>'
             f'</a>'
         )
 
@@ -578,18 +443,9 @@ async def handle_mx_redirect(request):
 
     raw_domain_path = BASE_URL.replace("https://", "").replace("http://", "")
     stream_path = f"{raw_domain_path}/stream?id={msg_id}"
-
     mx_ad_intent = f"intent://{stream_path}#Intent;scheme=https;type=video/*;package=com.mxtech.videoplayer.ad;end"
-    mx_pro_intent = f"intent://{stream_path}#Intent;scheme=https;type=video/*;package=com.mxtech.videoplayer.pro;end"
-    web_url = f"{BASE_URL}/watch?id={msg_id}"
 
-    html_content = MX_REDIRECT_TEMPLATE.format(
-        mx_ad_intent=mx_ad_intent,
-        mx_pro_intent=mx_pro_intent,
-        web_url=web_url,
-        filename=file_doc["filename"]
-    )
-    return web.Response(text=html_content, content_type="text/html")
+    return web.HTTPFound(mx_ad_intent)
 
 async def handle_stream(request):
     msg_id_str = request.query.get("id")
@@ -603,18 +459,14 @@ async def handle_stream(request):
     if not file_doc:
         return web.Response(text="File not found", status=404)
 
-    if AUTO_DELETE_TIME > 0:
-        if int(time.time()) > file_doc["created_at"] + AUTO_DELETE_TIME:
-            return web.Response(text="Link Expired", status=403)
-
     msg = await tg_client.get_messages(LOG_GROUP, msg_id)
     media = msg.document or msg.video or msg.audio or (msg.photo[-1] if msg.photo else None)
     if not media:
-        return web.Response(text="Media missing in storage channel", status=404)
+        return web.Response(text="Media missing", status=404)
 
     filename = getattr(media, "file_name", file_doc["filename"])
     file_size = getattr(media, "file_size", 0)
-    mime_type = getattr(media, "mime_type", "video/mp4")
+    mime_type = getattr(media, "mime_type", "application/octet-stream")
 
     headers = {
         "Content-Type": mime_type,
@@ -633,19 +485,13 @@ async def handle_stream(request):
 
     return response
 
-async def handle_setwebhook(request):
-    webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
-    res = await ptb_app.bot.set_webhook(url=webhook_url)
-    return web.json_response({"ok": res, "url": webhook_url})
-
 async def init_app():
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="Enterprise MX Media Streamer is Live!"))
+    app.router.add_get("/", lambda r: web.Response(text="Bot is Live!"))
     app.router.add_post(f"/{BOT_TOKEN}", handle_webhook)
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/mx", handle_mx_redirect)
     app.router.add_get("/stream", handle_stream)
-    app.router.add_get("/setwebhook", handle_setwebhook)
 
     async def on_startup(app):
         await ptb_app.initialize()
