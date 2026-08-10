@@ -473,11 +473,15 @@ ptb_app.add_handler(MessageHandler(
 ))
 
 async def main():
-    # Setup Web Application Server
+    # Setup Web Application Server and Routes (Before starting runner)
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="File 2 Links Production Server Online."))
     app.router.add_get("/watch", handle_watch)
     app.router.add_get("/stream", handle_stream)
+    
+    # Webhook Route Registered Safely Before App Starts
+    if BASE_URL:
+        app.router.add_post(f"/{BOT_TOKEN}", ptb_app.update_queue.put)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -489,10 +493,8 @@ async def main():
     await ptb_app.start()
     await tg_client.start()
 
-    # Webhook Setup
     if BASE_URL:
         webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
-        app.router.add_post(f"/{BOT_TOKEN}", ptb_app.update_queue.put)
         await ptb_app.bot.set_webhook(url=webhook_url)
 
     print(f"🚀 Service fully running on port {PORT} and loop synchronized!")
