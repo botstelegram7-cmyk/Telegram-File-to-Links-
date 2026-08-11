@@ -1,6 +1,7 @@
 import time
 import os
 import math
+import mimetypes
 import asyncio
 import aiohttp
 from aiohttp import web
@@ -48,6 +49,18 @@ def get_readable_file_size(size_in_bytes):
         size_in_bytes /= 1024.0
     return f"{size_in_bytes:.2f} TB"
 
+def guess_mime_type(filename, telegram_mime, is_audio=False):
+    """Best-effort mime detection so ANY audio/video format Telegram gives us
+    (mp4, mkv, webm, mov, avi, mp3, flac, ogg, wav, m4a, opus, aac, etc.)
+    gets a sane Content-Type / <source type> instead of falling back to a
+    hardcoded 'video/mp4' that could mislead the browser about the real format."""
+    if telegram_mime and telegram_mime != "application/octet-stream":
+        return telegram_mime
+    guessed, _ = mimetypes.guess_type(filename or "")
+    if guessed:
+        return guessed
+    return "audio/mpeg" if is_audio else "video/mp4"
+
 # =========================================================================
 # RAW TELEGRAM BOT API LAYER
 # Every message the bot sends for /start and the Help panel goes straight
@@ -80,15 +93,34 @@ def btn(text, url=None, callback_data=None, style=None, web_app_url=None):
 def markup(rows):
     return {"inline_keyboard": rows}
 
-async def send_message(chat_id, text, reply_markup=None, photo_url=None, disable_web_page_preview=True):
-    if photo_url:
-        return await tg_api("sendPhoto", {
-            "chat_id": chat_id,
-            "photo": photo_url,
-            "caption": text,
-            "parse_mode": "HTML",
-            "reply_markup": reply_markup
-        })
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".3gp"}
+GIF_EXTS = {".gif"}
+
+async def send_start_media(chat_id, text, reply_markup, media_url):
+    """Sends the /start banner via the correct raw Bot API method for whatever
+    media type START_PIC actually is (photo, video, or animated gif) — a plain
+    sendPhoto call on a video URL delivers nothing, which is why a 15s mp4
+    banner was showing up blank."""
+    if not media_url:
+        return await send_message(chat_id, text, reply_markup)
+
+    ext = os.path.splitext(media_url.split("?")[0])[1].lower()
+    if ext in GIF_EXTS:
+        method, field = "sendAnimation", "animation"
+    elif ext in VIDEO_EXTS:
+        method, field = "sendVideo", "video"
+    else:
+        method, field = "sendPhoto", "photo"
+
+    return await tg_api(method, {
+        "chat_id": chat_id,
+        field: media_url,
+        "caption": text,
+        "parse_mode": "HTML",
+        "reply_markup": reply_markup
+    })
+
+async def send_message(chat_id, text, reply_markup=None, disable_web_page_preview=True):
     return await tg_api("sendMessage", {
         "chat_id": chat_id,
         "text": text,
@@ -97,7 +129,20 @@ async def send_message(chat_id, text, reply_markup=None, photo_url=None, disable
         "disable_web_page_preview": disable_web_page_preview
     })
 
-async def edit_message_text(chat_id, message_id, text, reply_markup=None):
+async def edit_message(chat_id, message_id, text, reply_markup=None, has_media=False):
+    """editMessageText only works on plain text messages. If the original
+    message carries a photo/video/animation/document/audio, Telegram rejects
+    it with 'There is no text in the message to edit' — editMessageCaption
+    must be used instead. This is why the Help button was silently failing
+    whenever /start was sent with a START_PIC attached."""
+    if has_media:
+        return await tg_api("editMessageCaption", {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "caption": text,
+            "parse_mode": "HTML",
+            "reply_markup": reply_markup
+        })
     return await tg_api("editMessageText", {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -117,6 +162,103 @@ async def answer_callback_query(callback_query_id, text=None, show_alert=False):
     })
 
 # =========================================================================
+# SHARED THEME SWITCHER (CSS + HTML + JS) — reused by the video player and
+# the library page. Sits in a fixed corner, offers several light palettes
+# plus the default dark one, and drives the page background/text colours
+# via CSS variables. The dark control bar over the video itself is kept
+# fixed-dark on purpose (industry standard for legibility over footage).
+# =========================================================================
+THEME_STYLE = """
+:root {{
+    --bg-page:#05070d; --bg-page-2:#131b2e; --bg-panel:#111827; --bg-card:#111827;
+    --text-primary:#f8fafc; --text-secondary:#94a3b8; --border-color:rgba(255,255,255,0.08);
+    --badge-bg:rgba(99,102,241,0.15); --badge-text:#a5b4fc;
+}}
+body[data-theme="daylight"] {{
+    --bg-page:#eef1f6; --bg-page-2:#f7f9fc; --bg-panel:#ffffff; --bg-card:#ffffff;
+    --text-primary:#0f172a; --text-secondary:#475569; --border-color:rgba(15,23,42,0.08);
+    --badge-bg:rgba(79,70,229,0.1); --badge-text:#4f46e5;
+}}
+body[data-theme="cream"] {{
+    --bg-page:#faf6ef; --bg-page-2:#fdfbf7; --bg-panel:#fffaf2; --bg-card:#fffaf2;
+    --text-primary:#4a3728; --text-secondary:#8a7361; --border-color:rgba(74,55,40,0.1);
+    --badge-bg:rgba(217,119,6,0.12); --badge-text:#b45309;
+}}
+body[data-theme="ocean"] {{
+    --bg-page:#eaf4fb; --bg-page-2:#f5faff; --bg-panel:#ffffff; --bg-card:#ffffff;
+    --text-primary:#0b3559; --text-secondary:#4f7292; --border-color:rgba(11,53,89,0.1);
+    --badge-bg:rgba(14,116,183,0.12); --badge-text:#0e74b7;
+}}
+body[data-theme="mint"] {{
+    --bg-page:#eafaf3; --bg-page-2:#f5fdf9; --bg-panel:#ffffff; --bg-card:#ffffff;
+    --text-primary:#0f3d2c; --text-secondary:#4f8a72; --border-color:rgba(15,61,44,0.1);
+    --badge-bg:rgba(5,150,105,0.12); --badge-text:#059669;
+}}
+body[data-theme="rose"] {{
+    --bg-page:#fdf1f5; --bg-page-2:#fff7f9; --bg-panel:#ffffff; --bg-card:#ffffff;
+    --text-primary:#5c1f34; --text-secondary:#a1667c; --border-color:rgba(92,31,52,0.1);
+    --badge-bg:rgba(219,39,119,0.12); --badge-text:#db2777;
+}}
+.theme-fab {{
+    position:fixed; top:16px; right:16px; z-index:50; width:44px; height:44px; border-radius:50%;
+    background:var(--bg-panel); border:1px solid var(--border-color); color:var(--text-primary);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.25);
+}}
+.theme-fab svg {{ width:20px; height:20px; }}
+.theme-panel {{
+    position:fixed; top:66px; right:16px; z-index:50; background:var(--bg-panel);
+    border:1px solid var(--border-color); border-radius:14px; padding:14px; display:none;
+    box-shadow:0 14px 34px rgba(0,0,0,.35); min-width:190px;
+}}
+.theme-panel.open {{ display:block; }}
+.theme-panel .label {{ font-size:.7rem; color:var(--text-secondary); margin-bottom:10px; text-transform:uppercase; letter-spacing:.06em; }}
+.theme-swatch-row {{ display:flex; flex-wrap:wrap; gap:10px; }}
+.theme-swatch {{ width:30px; height:30px; border-radius:50%; cursor:pointer; border:2px solid transparent; box-shadow:0 0 0 1px rgba(255,255,255,.08); }}
+.theme-swatch.active {{ border-color:#6366f1; }}
+"""
+
+THEME_BODY = """
+<button class="theme-fab" id="themeFab" title="Change theme">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4 12H2m20 0h-2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/></svg>
+</button>
+<div class="theme-panel" id="themePanel">
+    <div class="label">Theme</div>
+    <div class="theme-swatch-row">
+        <div class="theme-swatch" data-theme="midnight" style="background:#111827;" title="Midnight"></div>
+        <div class="theme-swatch" data-theme="daylight" style="background:#eef1f6;" title="Daylight"></div>
+        <div class="theme-swatch" data-theme="cream" style="background:#faf6ef;" title="Cream"></div>
+        <div class="theme-swatch" data-theme="ocean" style="background:#eaf4fb;" title="Ocean"></div>
+        <div class="theme-swatch" data-theme="mint" style="background:#eafaf3;" title="Mint"></div>
+        <div class="theme-swatch" data-theme="rose" style="background:#fdf1f5;" title="Rose"></div>
+    </div>
+</div>
+"""
+
+THEME_SCRIPT = """
+(function () {{
+    const themeFab = document.getElementById('themeFab');
+    const themePanel = document.getElementById('themePanel');
+    themeFab.onclick = (e) => {{ e.stopPropagation(); themePanel.classList.toggle('open'); }};
+    document.addEventListener('click', () => themePanel.classList.remove('open'));
+    document.querySelectorAll('.theme-swatch').forEach(sw => {{
+        sw.onclick = (e) => {{
+            e.stopPropagation();
+            const theme = sw.dataset.theme;
+            if (theme === 'midnight') document.body.removeAttribute('data-theme');
+            else document.body.setAttribute('data-theme', theme);
+            localStorage.setItem('f2l_theme', theme);
+            document.querySelectorAll('.theme-swatch').forEach(s => s.classList.remove('active'));
+            sw.classList.add('active');
+        }};
+    }});
+    const saved = localStorage.getItem('f2l_theme') || 'midnight';
+    if (saved !== 'midnight') document.body.setAttribute('data-theme', saved);
+    const activeSwatch = document.querySelector('.theme-swatch[data-theme="' + saved + '"]');
+    if (activeSwatch) activeSwatch.classList.add('active');
+}})();
+"""
+
+# =========================================================================
 # HTML TEMPLATES
 # =========================================================================
 
@@ -128,54 +270,48 @@ VIDEO_PLAYER_TEMPLATE = """<!DOCTYPE html>
 <title>{display_title} - File 2 Links</title>
 <style>
 * {{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }}
+""" + THEME_STYLE + """
 body {{
-    background: radial-gradient(circle at top, #131b2e 0%, #05070d 65%);
-    color:#f8fafc; font-family:'Segoe UI',Roboto,Tahoma,Geneva,Verdana,sans-serif;
+    background: var(--bg-page); color:var(--text-primary);
+    font-family:'Segoe UI',Roboto,Tahoma,Geneva,Verdana,sans-serif;
     min-height:100vh; padding:16px; display:flex; flex-direction:column; align-items:center;
 }}
 .page {{ width:100%; max-width:1100px; display:flex; flex-direction:column; gap:20px; }}
 
 /* ---------- PLAYER ---------- */
 .player-shell {{
-    background:#111827; border:1px solid rgba(255,255,255,0.08); border-radius:18px;
-    overflow:hidden; box-shadow:0 25px 60px -12px rgba(0,0,0,0.8);
+    background:var(--bg-panel); border:1px solid var(--border-color); border-radius:18px;
+    overflow:hidden; box-shadow:0 25px 60px -12px rgba(0,0,0,0.6);
 }}
 .player-box {{
     position:relative; width:100%; background:#000; aspect-ratio:16/9;
-    display:flex; align-items:center; justify-content:center;
-    user-select:none;
+    display:flex; align-items:center; justify-content:center; user-select:none;
 }}
-.player-box video {{
-    width:100%; height:100%; object-fit:contain; display:block; filter:brightness(1);
+.player-box video {{ width:100%; height:100%; object-fit:contain; display:block; filter:brightness(1); }}
+
+.audio-cover {{
+    position:absolute; inset:0; z-index:3; display:{audio_cover_display}; align-items:center; justify-content:center;
+    background:linear-gradient(135deg,#1e293b,#0f172a); pointer-events:none;
 }}
-.loader {{
-    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    background:rgba(0,0,0,0.4); z-index:6; transition:opacity .25s ease;
-}}
+.audio-cover svg {{ width:64px; height:64px; opacity:.85; }}
+
+.loader {{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.4); z-index:6; transition:opacity .25s ease; }}
 .loader.hidden {{ opacity:0; pointer-events:none; }}
 .spinner {{ width:46px; height:46px; border:4px solid rgba(255,255,255,.15); border-top-color:#6366f1; border-radius:50%; animation:spin .8s linear infinite; }}
 @keyframes spin {{ to {{ transform:rotate(360deg); }} }}
 
-.center-play {{
-    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    z-index:5; cursor:pointer; background:rgba(0,0,0,0.25);
-}}
+.center-play {{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:5; cursor:pointer; background:rgba(0,0,0,0.25); }}
 .center-play svg {{ width:74px; height:74px; filter:drop-shadow(0 4px 14px rgba(0,0,0,.6)); }}
 .center-play.hidden {{ display:none; }}
 
 .top-bar {{
-    position:absolute; top:0; left:0; right:0; padding:16px;
-    background:linear-gradient(to bottom, rgba(0,0,0,.65), transparent);
+    position:absolute; top:0; left:0; right:0; padding:16px; background:linear-gradient(to bottom, rgba(0,0,0,.65), transparent);
     font-weight:600; font-size:1rem; z-index:4; opacity:1; transition:opacity .3s ease;
-    text-shadow:0 2px 6px rgba(0,0,0,.7); pointer-events:none;
+    text-shadow:0 2px 6px rgba(0,0,0,.7); pointer-events:none; color:#fff;
 }}
 .controls-hidden .top-bar {{ opacity:0; }}
 
-.controls {{
-    position:absolute; left:0; right:0; bottom:0; z-index:4;
-    padding:10px 14px 14px; background:linear-gradient(to top, rgba(0,0,0,.85), transparent);
-    opacity:1; transition:opacity .3s ease;
-}}
+.controls {{ position:absolute; left:0; right:0; bottom:0; z-index:4; padding:10px 14px 14px; background:linear-gradient(to top, rgba(0,0,0,.85), transparent); opacity:1; transition:opacity .3s ease; }}
 .controls-hidden .controls {{ opacity:0; pointer-events:none; }}
 
 .seek-row {{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }}
@@ -189,74 +325,74 @@ body {{
 .controls-row {{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; }}
 .ctrl-left, .ctrl-right {{ display:flex; align-items:center; gap:12px; }}
 .ctrl-right {{ margin-left:auto; }}
-.icon-btn {{
-    background:none; border:none; color:#f8fafc; cursor:pointer; padding:6px;
-    display:flex; align-items:center; justify-content:center; border-radius:8px; transition:background .15s ease;
-}}
+.icon-btn {{ background:none; border:none; color:#f8fafc; cursor:pointer; padding:6px; display:flex; align-items:center; justify-content:center; border-radius:8px; transition:background .15s ease; }}
 .icon-btn:hover {{ background:rgba(255,255,255,.12); }}
 .icon-btn svg {{ width:22px; height:22px; }}
 
 .volume-wrap {{ display:flex; align-items:center; gap:6px; }}
-input[type=range] {{
-    -webkit-appearance:none; appearance:none; width:70px; height:4px; border-radius:4px;
-    background:rgba(255,255,255,.25); outline:none; cursor:pointer;
-}}
-input[type=range]::-webkit-slider-thumb {{
-    -webkit-appearance:none; width:12px; height:12px; border-radius:50%; background:#6366f1; cursor:pointer;
-}}
+input[type=range] {{ -webkit-appearance:none; appearance:none; width:70px; height:4px; border-radius:4px; background:rgba(255,255,255,.25); outline:none; cursor:pointer; }}
+input[type=range]::-webkit-slider-thumb {{ -webkit-appearance:none; width:12px; height:12px; border-radius:50%; background:#6366f1; cursor:pointer; }}
 input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50%; background:#6366f1; border:none; cursor:pointer; }}
 
 .menu-wrap {{ position:relative; }}
-.dropdown {{
-    position:absolute; bottom:38px; right:0; background:#1c2333; border:1px solid rgba(255,255,255,.1);
-    border-radius:10px; padding:6px; display:none; min-width:170px; box-shadow:0 10px 30px rgba(0,0,0,.5); z-index:10;
-}}
+.dropdown {{ position:absolute; bottom:38px; right:0; background:#1c2333; border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:6px; display:none; min-width:190px; box-shadow:0 10px 30px rgba(0,0,0,.5); z-index:10; }}
 .dropdown.open {{ display:block; }}
-.dropdown .row {{ padding:8px 10px; font-size:.85rem; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; }}
+.dropdown .row {{ padding:8px 10px; font-size:.85rem; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; color:#f1f5f9; }}
 .dropdown .row:hover {{ background:rgba(255,255,255,.08); }}
 .dropdown .row.active {{ color:#a5b4fc; font-weight:700; }}
 .dropdown .sub-label {{ font-size:.72rem; color:#94a3b8; padding:6px 10px 2px; }}
+.dropdown .caveat {{ font-size:.68rem; color:#64748b; padding:6px 10px 2px; line-height:1.35; }}
 .brightness-slider-wrap {{ display:flex; align-items:center; gap:8px; padding:8px 10px; }}
 
 /* ---------- INFO PANEL ---------- */
 .info-panel {{ padding:20px 22px; display:flex; flex-direction:column; gap:16px; }}
-.title {{ font-size:1.2rem; font-weight:700; color:#f1f5f9; word-break:break-word; }}
+.title {{ font-size:1.2rem; font-weight:700; color:var(--text-primary); word-break:break-word; }}
 .meta {{ display:flex; gap:8px; flex-wrap:wrap; }}
-.badge {{ background:rgba(99,102,241,0.15); color:#a5b4fc; padding:3px 10px; border-radius:20px; font-size:.78rem; font-weight:600; }}
+.badge {{ background:var(--badge-bg); color:var(--badge-text); padding:3px 10px; border-radius:20px; font-size:.78rem; font-weight:600; }}
 .actions {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; }}
-.btn {{
-    padding:13px 16px; border-radius:12px; font-weight:600; font-size:.9rem; text-decoration:none;
-    display:inline-flex; align-items:center; justify-content:center; gap:8px; color:#fff; border:none; cursor:pointer;
-    transition:all .2s ease; box-shadow:0 4px 12px rgba(0,0,0,.3);
-}}
+.btn {{ padding:13px 16px; border-radius:12px; font-weight:600; font-size:.9rem; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:8px; color:#fff; border:none; cursor:pointer; transition:all .2s ease; box-shadow:0 4px 12px rgba(0,0,0,.3); }}
 .btn:hover {{ transform:translateY(-2px); filter:brightness(1.08); }}
 .btn-orange {{ background:linear-gradient(135deg,#f97316,#ea580c); }}
 .btn-red {{ background:linear-gradient(135deg,#ef4444,#dc2626); }}
 .btn-green {{ background:linear-gradient(135deg,#10b981,#059669); }}
 .btn-blue {{ background:linear-gradient(135deg,#3b82f6,#2563eb); }}
-.footer-note {{ font-size:.76rem; color:#4b5563; text-align:center; }}
+.footer-note {{ font-size:.76rem; color:var(--text-secondary); text-align:center; }}
 
 /* ---------- RECOMMENDATIONS ---------- */
-.rec-section h3 {{ font-size:1rem; margin-bottom:14px; color:#e2e8f0; }}
+.rec-section h3 {{ font-size:1rem; margin-bottom:14px; color:var(--text-primary); }}
 .rec-grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:14px; }}
-.rec-card {{
-    background:#111827; border:1px solid rgba(255,255,255,.06); border-radius:14px; overflow:hidden;
-    cursor:pointer; transition:transform .18s ease, box-shadow .18s ease; text-decoration:none; color:inherit;
-}}
-.rec-card:hover {{ transform:translateY(-3px); box-shadow:0 14px 30px rgba(0,0,0,.5); }}
-.rec-thumb {{ width:100%; aspect-ratio:16/9; background:#1c2333; display:flex; align-items:center; justify-content:center; overflow:hidden; }}
-.rec-thumb img {{ width:100%; height:100%; object-fit:cover; }}
-.rec-thumb svg {{ width:34px; height:34px; opacity:.4; }}
+.rec-card {{ background:var(--bg-card); border:1px solid var(--border-color); border-radius:14px; overflow:hidden; cursor:pointer; transition:transform .18s ease, box-shadow .18s ease; text-decoration:none; color:inherit; }}
+.rec-card:hover {{ transform:translateY(-3px); box-shadow:0 14px 30px rgba(0,0,0,.35); }}
+.rec-thumb {{ position:relative; width:100%; aspect-ratio:16/9; background:#1c2333; overflow:hidden; }}
+.rec-thumb img {{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }}
+.rec-thumb-fallback {{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; }}
+.rec-thumb-fallback svg {{ width:34px; height:34px; opacity:.4; }}
 .rec-info {{ padding:10px 12px; }}
-.rec-title {{ font-size:.86rem; font-weight:600; color:#e5e7eb; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }}
-.rec-meta {{ font-size:.72rem; color:#94a3b8; margin-top:4px; }}
-.rec-empty {{ color:#4b5563; font-size:.85rem; }}
+.rec-title {{ font-size:.86rem; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }}
+.rec-meta {{ font-size:.72rem; color:var(--text-secondary); margin-top:4px; }}
+.rec-empty {{ color:var(--text-secondary); font-size:.85rem; }}
+
+@media screen and (max-width: 900px) and (orientation: portrait) {{
+    .player-box:fullscreen, .player-box:-webkit-full-screen {{
+        transform: rotate(90deg);
+        transform-origin: center center;
+        width: 100vh;
+        height: 100vw;
+        position: fixed;
+        top: 50%; left: 50%;
+        margin-top: -50vw; margin-left: -50vh;
+    }}
+}}
 </style>
 </head>
 <body>
+""" + THEME_BODY + """
 <div class="page">
     <div class="player-shell">
         <div class="player-box" id="playerBox">
+            <div class="audio-cover" id="audioCover">
+                <svg viewBox="0 0 24 24" fill="white"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z"/></svg>
+            </div>
             <div class="loader" id="loader"><div class="spinner"></div></div>
             <div class="center-play" id="centerPlay">
                 <svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
@@ -282,10 +418,10 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
                         <button class="icon-btn" id="playBtn" title="Play/Pause">
                             <svg viewBox="0 0 24 24" fill="white"><path id="playIcon" d="M8 5v14l11-7z"/></svg>
                         </button>
-                        <button class="icon-btn" id="backBtn" title="-10s">
+                        <button class="icon-btn" id="backBtn" title="-30s">
                             <svg viewBox="0 0 24 24" fill="white"><path d="M12 5V1L7 6l5 5V7c3.3 0 6 2.7 6 6s-2.7 6-6 6-6-2.7-6-6H4c0 4.4 3.6 8 8 8s8-3.6 8-8-3.6-8-8-8z"/></svg>
                         </button>
-                        <button class="icon-btn" id="fwdBtn" title="+10s">
+                        <button class="icon-btn" id="fwdBtn" title="+30s">
                             <svg viewBox="0 0 24 24" fill="white"><path d="M12 5V1l5 5-5 5V7c-3.3 0-6 2.7-6 6s2.7 6 6 6 6-2.7 6-6h2c0 4.4-3.6 8-8 8s-8-3.6-8-8 3.6-8 8-8z"/></svg>
                         </button>
                         <div class="volume-wrap">
@@ -296,6 +432,12 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
                         </div>
                     </div>
                     <div class="ctrl-right">
+                        <div class="menu-wrap" id="audioTrackWrap" style="display:none;">
+                            <button class="icon-btn" id="audioBtn" title="Audio track">
+                                <svg viewBox="0 0 24 24" fill="white"><path d="M12 3a1 1 0 011 1v6.17a3 3 0 11-2-2.83V4a1 1 0 011-1zM4 10a1 1 0 011 1v3a1 1 0 01-2 0v-3a1 1 0 011-1zm16 0a1 1 0 011 1v3a1 1 0 01-2 0v-3a1 1 0 011-1z"/></svg>
+                            </button>
+                            <div class="dropdown" id="audioMenu"></div>
+                        </div>
                         <div class="menu-wrap">
                             <button class="icon-btn" id="brightnessBtn" title="Brightness">
                                 <svg viewBox="0 0 24 24" fill="white"><path d="M12 7a5 5 0 100 10 5 5 0 000-10zm0-5h0v3h0V2zm0 17h0v3h0v-3zM4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2 12h3M19 12h3M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></svg>
@@ -303,7 +445,7 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
                             <div class="dropdown" id="brightnessMenu">
                                 <div class="sub-label">Brightness</div>
                                 <div class="brightness-slider-wrap">
-                                    <input type="range" id="brightnessSlider" min="50" max="150" value="100" style="width:130px;">
+                                    <input type="range" id="brightnessSlider" min="50" max="150" value="100" style="width:150px;">
                                 </div>
                             </div>
                         </div>
@@ -359,8 +501,6 @@ const video = document.getElementById('video');
 const playerBox = document.getElementById('playerBox');
 const loader = document.getElementById('loader');
 const centerPlay = document.getElementById('centerPlay');
-const controls = document.getElementById('controls');
-const topBar = document.getElementById('topBar');
 const playBtn = document.getElementById('playBtn');
 const playIcon = document.getElementById('playIcon');
 const backBtn = document.getElementById('backBtn');
@@ -373,6 +513,9 @@ const brightnessMenu = document.getElementById('brightnessMenu');
 const brightnessSlider = document.getElementById('brightnessSlider');
 const speedBtn = document.getElementById('speedBtn');
 const speedMenu = document.getElementById('speedMenu');
+const audioTrackWrap = document.getElementById('audioTrackWrap');
+const audioBtn = document.getElementById('audioBtn');
+const audioMenu = document.getElementById('audioMenu');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const seekBar = document.getElementById('seekBar');
 const seekFill = document.getElementById('seekFill');
@@ -391,9 +534,7 @@ function fmtTime(s) {{
     return `${{m}}:${{sec}}`;
 }}
 
-function togglePlay() {{
-    if (video.paused) video.play(); else video.pause();
-}}
+function togglePlay() {{ if (video.paused) video.play(); else video.pause(); }}
 playBtn.onclick = togglePlay;
 centerPlay.onclick = togglePlay;
 playerBox.addEventListener('dblclick', () => toggleFullscreen());
@@ -403,7 +544,7 @@ video.addEventListener('pause', () => {{ playIcon.setAttribute('d', PLAY_PATH); 
 video.addEventListener('waiting', () => loader.classList.remove('hidden'));
 video.addEventListener('canplay', () => loader.classList.add('hidden'));
 video.addEventListener('playing', () => loader.classList.add('hidden'));
-video.addEventListener('loadedmetadata', () => {{ durTime.textContent = fmtTime(video.duration); }});
+video.addEventListener('loadedmetadata', () => {{ durTime.textContent = fmtTime(video.duration); populateAudioTracks(); }});
 
 video.addEventListener('timeupdate', () => {{
     if (video.duration) {{
@@ -421,8 +562,8 @@ video.addEventListener('progress', () => {{
     }}
 }});
 
-backBtn.onclick = () => video.currentTime = Math.max(0, video.currentTime - 10);
-fwdBtn.onclick = () => video.currentTime = Math.min(video.duration || 0, video.currentTime + 10);
+backBtn.onclick = () => video.currentTime = Math.max(0, video.currentTime - 30);
+fwdBtn.onclick = () => video.currentTime = Math.min(video.duration || 0, video.currentTime + 30);
 
 function seekTo(clientX) {{
     const rect = seekBar.getBoundingClientRect();
@@ -449,15 +590,14 @@ volumeSlider.addEventListener('input', () => {{
 }});
 
 function closeAllMenus(except) {{
-    [brightnessMenu, speedMenu].forEach(m => {{ if (m !== except) m.classList.remove('open'); }});
+    [brightnessMenu, speedMenu, audioMenu].forEach(m => {{ if (m !== except) m.classList.remove('open'); }});
 }}
 brightnessBtn.onclick = (e) => {{ e.stopPropagation(); closeAllMenus(brightnessMenu); brightnessMenu.classList.toggle('open'); }};
 speedBtn.onclick = (e) => {{ e.stopPropagation(); closeAllMenus(speedMenu); speedMenu.classList.toggle('open'); }};
+audioBtn.onclick = (e) => {{ e.stopPropagation(); closeAllMenus(audioMenu); audioMenu.classList.toggle('open'); }};
 document.addEventListener('click', () => closeAllMenus(null));
 
-brightnessSlider.addEventListener('input', () => {{
-    video.style.filter = `brightness(${{brightnessSlider.value / 100}})`;
-}});
+brightnessSlider.addEventListener('input', () => {{ video.style.filter = `brightness(${{brightnessSlider.value / 100}})`; }});
 
 speedMenu.querySelectorAll('.row').forEach(row => {{
     row.addEventListener('click', (e) => {{
@@ -469,9 +609,57 @@ speedMenu.querySelectorAll('.row').forEach(row => {{
     }});
 }});
 
-function toggleFullscreen() {{
-    if (!document.fullscreenElement) playerBox.requestFullscreen().catch(() => {{}});
-    else document.exitFullscreen().catch(() => {{}});
+// ---------- Audio track switcher ----------
+// Browsers can only enumerate/switch tracks that are natively decodable
+// (e.g. AAC). Dolby Digital / Dolby Digital Plus (AC3 / E-AC3) tracks have
+// no royalty-free decoder in any mainstream browser, so even if a track is
+// listed, audio for it won't play — that's a browser/codec limitation, not
+// something this page can work around without server-side transcoding.
+function populateAudioTracks() {{
+    if (!('audioTracks' in video) || !video.audioTracks || video.audioTracks.length <= 1) {{
+        audioTrackWrap.style.display = 'none';
+        return;
+    }}
+    audioTrackWrap.style.display = 'flex';
+    audioMenu.innerHTML = '<div class="sub-label">Audio Track</div>';
+    for (let i = 0; i < video.audioTracks.length; i++) {{
+        const track = video.audioTracks[i];
+        const row = document.createElement('div');
+        row.className = 'row' + (track.enabled ? ' active' : '');
+        row.textContent = track.label || track.language || ('Track ' + (i + 1));
+        row.onclick = (e) => {{
+            e.stopPropagation();
+            for (let j = 0; j < video.audioTracks.length; j++) video.audioTracks[j].enabled = (j === i);
+            audioMenu.querySelectorAll('.row').forEach(r => r.classList.remove('active'));
+            row.classList.add('active');
+            audioMenu.classList.remove('open');
+        }};
+        audioMenu.appendChild(row);
+    }}
+    const offRow = document.createElement('div');
+    offRow.className = 'row';
+    offRow.textContent = 'OFF (mute)';
+    offRow.onclick = (e) => {{ e.stopPropagation(); video.muted = true; audioMenu.classList.remove('open'); }};
+    audioMenu.appendChild(offRow);
+    const caveat = document.createElement('div');
+    caveat.className = 'caveat';
+    caveat.textContent = 'Only browser-decodable tracks (e.g. AAC) play. Dolby/EAC3 tracks are not supported natively by any browser.';
+    audioMenu.appendChild(caveat);
+}}
+
+// ---------- Fullscreen — force landscape ----------
+async function toggleFullscreen() {{
+    if (!document.fullscreenElement) {{
+        try {{ await playerBox.requestFullscreen(); }} catch (e) {{}}
+        if (screen.orientation && screen.orientation.lock) {{
+            try {{ await screen.orientation.lock('landscape'); }} catch (e) {{}}
+        }}
+    }} else {{
+        if (screen.orientation && screen.orientation.unlock) {{
+            try {{ screen.orientation.unlock(); }} catch (e) {{}}
+        }}
+        try {{ await document.exitFullscreen(); }} catch (e) {{}}
+    }}
 }}
 fullscreenBtn.onclick = toggleFullscreen;
 
@@ -502,9 +690,11 @@ fetch(`/api/suggestions?id=${{CURRENT_ID}}`)
         grid.innerHTML = items.map(item => `
             <a class="rec-card" href="/watch?id=${{item.msg_id}}">
                 <div class="rec-thumb">
-                    ${{item.has_thumb
-                        ? `<img src="/thumb?id=${{item.msg_id}}" loading="lazy" onerror="this.parentElement.innerHTML='<svg viewBox=\\'0 0 24 24\\' fill=\\'white\\'><path d=\\'M8 5v14l11-7z\\'/></svg>'">`
-                        : `<svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>`}}
+                    <img src="/thumb?id=${{item.msg_id}}" loading="lazy" alt=""
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div class="rec-thumb-fallback">
+                        <svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+                    </div>
                 </div>
                 <div class="rec-info">
                     <div class="rec-title">${{item.display_title}}</div>
@@ -513,8 +703,79 @@ fetch(`/api/suggestions?id=${{CURRENT_ID}}`)
             </a>
         `).join('');
     }})
-    .catch(() => {{ document.getElementById('recGrid').innerHTML = '<div class="rec-empty">Couldn\\'t load recommendations.</div>'; }});
+    .catch(() => {{ document.getElementById('recGrid').innerHTML = '<div class="rec-empty">Could not load recommendations.</div>'; }});
 </script>
+<script>""" + THEME_SCRIPT + """</script>
+</body>
+</html>
+"""
+
+LIBRARY_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Your Library - File 2 Links</title>
+<style>
+* {{ margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }}
+""" + THEME_STYLE + """
+body {{
+    background:var(--bg-page); color:var(--text-primary);
+    font-family:'Segoe UI',Roboto,Tahoma,Geneva,Verdana,sans-serif;
+    min-height:100vh; padding:20px 16px 40px;
+}}
+.wrap {{ max-width:1100px; margin:0 auto; }}
+h1 {{ font-size:1.4rem; margin-bottom:4px; }}
+.sub {{ color:var(--text-secondary); font-size:.9rem; margin-bottom:22px; }}
+.grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:16px; }}
+.card {{ background:var(--bg-card); border:1px solid var(--border-color); border-radius:14px; overflow:hidden; cursor:pointer; transition:transform .18s ease, box-shadow .18s ease; text-decoration:none; color:inherit; }}
+.card:hover {{ transform:translateY(-3px); box-shadow:0 14px 30px rgba(0,0,0,.35); }}
+.thumb {{ position:relative; width:100%; aspect-ratio:16/9; background:#1c2333; overflow:hidden; }}
+.thumb img {{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }}
+.thumb-fallback {{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; }}
+.thumb-fallback svg {{ width:36px; height:36px; opacity:.4; }}
+.info {{ padding:10px 12px; }}
+.title {{ font-size:.88rem; font-weight:600; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }}
+.meta {{ font-size:.74rem; color:var(--text-secondary); margin-top:4px; }}
+.empty {{ color:var(--text-secondary); font-size:.9rem; margin-top:20px; }}
+</style>
+</head>
+<body>
+""" + THEME_BODY + """
+<div class="wrap">
+    <h1>📚 Your Library</h1>
+    <div class="sub">Every video and audio file you've sent, ready to stream.</div>
+    <div class="grid" id="grid">
+        <div class="empty">Loading your library…</div>
+    </div>
+</div>
+<script>
+const params = new URLSearchParams(location.search);
+const uid = params.get('uid') || '';
+fetch(`/api/library?uid=${{uid}}`)
+    .then(r => r.json())
+    .then(items => {{
+        const grid = document.getElementById('grid');
+        if (!items.length) {{ grid.innerHTML = '<div class="empty">No videos yet — send a file to the bot to get started.</div>'; return; }}
+        grid.innerHTML = items.map(item => `
+            <a class="card" href="/watch?id=${{item.msg_id}}">
+                <div class="thumb">
+                    <img src="/thumb?id=${{item.msg_id}}" loading="lazy" alt=""
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div class="thumb-fallback">
+                        <svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+                    </div>
+                </div>
+                <div class="info">
+                    <div class="title">${{item.display_title}}</div>
+                    <div class="meta">💾 ${{item.file_size_str}}</div>
+                </div>
+            </a>
+        `).join('');
+    }})
+    .catch(() => {{ document.getElementById('grid').innerHTML = '<div class="empty">Could not load your library.</div>'; }});
+</script>
+<script>""" + THEME_SCRIPT + """</script>
 </body>
 </html>
 """
@@ -660,18 +921,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await send_message(
             chat_id=update.effective_chat.id,
-            text=(
-                "<b>Access Restricted</b>\n\n"
-                "Please join our update channel to continue using <b>File 2 Links</b>."
-            ),
+            text="<b>Access Restricted</b>\n\nPlease join our update channel to continue using <b>File 2 Links</b>.",
             reply_markup=fsub_markup
         )
         return
 
+    bot_username = context.bot.username
+    user_link = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+    bot_link = f'<a href="https://t.me/{bot_username}">File 2 Links</a>' if bot_username else "<b>File 2 Links</b>"
+
     welcome_text = (
-        f"<b>File 2 Links</b>\n"
+        f"<b>{bot_link}</b>\n"
         f"<i>Instant Telegram Media Streaming</i>\n\n"
-        f"Welcome, {user.first_name}. This bot converts any file you send into a secure, "
+        f"Welcome, {user_link}. This bot converts any file you send into a secure, "
         f"shareable link — with built-in streaming, MX Player, and VLC support for video and audio.\n\n"
         f"<blockquote>▸ Send a video, audio, photo, or document to begin\n"
         f"▸ Receive an instant stream link and a download link\n"
@@ -679,21 +941,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Use the buttons below to get started."
     )
     buttons = markup([
-        [btn("✨ Open Web App", web_app_url=BASE_URL, style="primary")],
+        [btn("✨ Open Web App", web_app_url=f"{BASE_URL}/library?uid={user.id}", style="primary")],
         [btn("📖 Help Guide", callback_data="help_menu", style="success")]
     ])
 
-    await send_message(
+    await send_start_media(
         chat_id=update.effective_chat.id,
         text=welcome_text,
         reply_markup=buttons,
-        photo_url=START_PIC if START_PIC else None
+        media_url=START_PIC
     )
 
 async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     chat_id = query.message.chat.id
     message_id = query.message.message_id
+    has_media = bool(
+        query.message.photo or query.message.video or query.message.animation
+        or query.message.audio or query.message.document
+    )
 
     if query.data == "help_menu":
         await answer_callback_query(query.id)
@@ -711,7 +977,7 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = markup([
             [btn("❌ Close", callback_data="close_menu", style="danger")]
         ])
-        await edit_message_text(chat_id, message_id, help_text, reply_markup=buttons)
+        await edit_message(chat_id, message_id, help_text, reply_markup=buttons, has_media=has_media)
 
     elif query.data == "close_menu":
         await answer_callback_query(query.id)
@@ -774,6 +1040,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await save_user(user)
 
+    # Document, Video, Audio, or Photo — every format Telegram supports is accepted here.
     media = message.document or message.video or message.audio or message.photo
     if not media:
         return
@@ -783,6 +1050,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_size_str = get_readable_file_size(file_size_bytes)
 
     is_photo = bool(message.photo)
+    is_audio_only = bool(message.audio)
     is_video_audio = bool(message.video or message.audio)
 
     if is_photo:
@@ -799,10 +1067,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     display_title = original_caption if original_caption.strip() else filename
 
-    # Detect an embedded thumbnail (used for "up next" recommendation cards).
     thumb_source = message.video or message.document
     has_thumb = bool(getattr(thumb_source, "thumbnail", None)) if thumb_source else False
-    mime_type = getattr(media, "mime_type", None) or ("video/mp4" if message.video else "audio/mpeg" if message.audio else "application/octet-stream")
+    mime_type = guess_mime_type(filename, getattr(media, "mime_type", None), is_audio=is_audio_only)
 
     log_caption = (
         f"📁 <b>Title:</b> <code>{display_title}</code>\n"
@@ -825,6 +1092,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "display_title": display_title,
         "file_size_str": file_size_str,
         "is_video_audio": is_video_audio,
+        "is_audio_only": is_audio_only,
         "is_photo": is_photo,
         "has_thumb": has_thumb,
         "mime_type": mime_type,
@@ -952,7 +1220,6 @@ async def handle_watch(request):
         return web.Response(text="File content not found or expired.", status=404)
 
     if not file_doc.get("is_video_audio", False):
-        # No watch page for photos/documents — send the browser straight to the direct link.
         raise web.HTTPFound(f"{BASE_URL}/stream?id={msg_id}")
 
     stream_url = f"{BASE_URL}/stream?id={msg_id}"
@@ -963,6 +1230,7 @@ async def handle_watch(request):
     display_title = file_doc.get("display_title", "Media File")
     file_size_str = file_doc.get("file_size_str", "Unknown Size")
     mime_type = file_doc.get("mime_type") or "video/mp4"
+    is_audio_only = file_doc.get("is_audio_only", False)
 
     html_content = VIDEO_PLAYER_TEMPLATE.format(
         stream_url=stream_url,
@@ -972,9 +1240,30 @@ async def handle_watch(request):
         display_title=display_title,
         file_size=file_size_str,
         mime_type=mime_type,
-        msg_id=msg_id
+        msg_id=msg_id,
+        audio_cover_display="flex" if is_audio_only else "none"
     )
     return web.Response(text=html_content, content_type="text/html")
+
+async def handle_library(request):
+    html_content = LIBRARY_TEMPLATE
+    return web.Response(text=html_content, content_type="text/html")
+
+async def handle_library_api(request):
+    uid = request.query.get("uid")
+    query = {"is_video_audio": True}
+    if uid and uid.isdigit():
+        query["user_id"] = int(uid)
+
+    items = []
+    cursor = files_col.find(query).sort("created_at", -1).limit(60)
+    async for doc in cursor:
+        items.append({
+            "msg_id": doc["msg_id"],
+            "display_title": doc.get("display_title", "Untitled"),
+            "file_size_str": doc.get("file_size_str", "")
+        })
+    return web.json_response(items)
 
 async def handle_suggestions(request):
     """YouTube-style 'up next' feed — recent videos/audio, excluding the one being watched."""
@@ -989,8 +1278,7 @@ async def handle_suggestions(request):
         items.append({
             "msg_id": doc["msg_id"],
             "display_title": doc.get("display_title", "Untitled"),
-            "file_size_str": doc.get("file_size_str", ""),
-            "has_thumb": doc.get("has_thumb", False)
+            "file_size_str": doc.get("file_size_str", "")
         })
     return web.json_response(items)
 
@@ -1017,9 +1305,10 @@ async def handle_thumb(request):
         return web.Response(status=404)
 
 async def handle_stream(request):
-    """Serves the media binary with proper HTTP Range support. Without this,
-    players like MX Player / VLC / the in-browser <video> tag cannot seek and
-    often refuse to start playback at all on larger files."""
+    """Serves the media binary with proper HTTP Range support for ANY audio
+    or video format Telegram provides — the actual Content-Type is detected
+    from Telegram's own mime_type (falling back to filename-extension
+    guessing), it isn't hardcoded to a single format."""
     msg_id_str = request.query.get("id")
     is_download = request.query.get("d") == "true"
 
@@ -1044,7 +1333,7 @@ async def handle_stream(request):
         else:
             filename = getattr(media, "file_name", file_doc.get("filename", "download"))
             file_size = getattr(media, "file_size", 0)
-            mime_type = getattr(media, "mime_type", "application/octet-stream")
+            mime_type = guess_mime_type(filename, getattr(media, "mime_type", None), is_audio=bool(msg.audio))
 
         range_header = request.headers.get("Range")
 
@@ -1127,6 +1416,8 @@ async def main():
     app = web.Application()
     app.router.add_get("/", lambda r: web.Response(text="File 2 Links Production Server Online."))
     app.router.add_get("/watch", handle_watch)
+    app.router.add_get("/library", handle_library)
+    app.router.add_get("/api/library", handle_library_api)
     app.router.add_get("/stream", handle_stream)
     app.router.add_get("/mx", handle_mx)
     app.router.add_get("/vlc", handle_vlc)
