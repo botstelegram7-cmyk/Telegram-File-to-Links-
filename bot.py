@@ -1,11 +1,11 @@
 import time
 import os
+import math
 import asyncio
 import aiohttp
 from aiohttp import web
 from motor.motor_asyncio import AsyncIOMotorClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters as ptb_filters, ContextTypes
 from pyrogram import Client
 
@@ -29,11 +29,14 @@ tg_client = Client(
     in_memory=True
 )
 
-# --- PYTHON TELEGRAM BOT APPLICATION ---
+# --- PYTHON TELEGRAM BOT APPLICATION (used only to receive/dispatch webhook updates) ---
 ptb_app = Application.builder().token(BOT_TOKEN).build()
 
 FSUB_CHANNEL = "serenaunzipbot"
 FSUB_LINK = "https://t.me/serenaunzipbot"
+
+# Streaming is served in 1 MiB chunks by Pyrogram's stream_media().
+CHUNK_SIZE = 1024 * 1024
 
 # --- HELPER: HUMAN READABLE FILE SIZE ---
 def get_readable_file_size(size_in_bytes):
@@ -45,7 +48,75 @@ def get_readable_file_size(size_in_bytes):
         size_in_bytes /= 1024.0
     return f"{size_in_bytes:.2f} TB"
 
-# --- HTML TEMPLATES WITH VIBRANT COLORED BUTTONS ---
+# =========================================================================
+# RAW TELEGRAM BOT API LAYER
+# Every message the bot sends for /start and the Help panel goes straight
+# to https://api.telegram.org/bot<token>/<method> over HTTP instead of
+# going through PTB's high level wrappers.
+# =========================================================================
+API_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+async def tg_api(method: str, payload: dict):
+    """Direct HTTP call to the Telegram Bot API. Drops empty keys before sending."""
+    clean_payload = {k: v for k, v in payload.items() if v is not None}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(f"{API_ROOT}/{method}", json=clean_payload) as resp:
+            return await resp.json()
+
+def btn(text, url=None, callback_data=None, style=None, web_app_url=None):
+    """Build a single raw inline_keyboard button dict, with optional colour style.
+    style: 'primary' (blue) | 'success' (green) | 'danger' (red)."""
+    button = {"text": text}
+    if url:
+        button["url"] = url
+    if callback_data:
+        button["callback_data"] = callback_data
+    if web_app_url:
+        button["web_app"] = {"url": web_app_url}
+    if style:
+        button["style"] = style
+    return button
+
+def markup(rows):
+    return {"inline_keyboard": rows}
+
+async def send_message(chat_id, text, reply_markup=None, photo_url=None, disable_web_page_preview=True):
+    if photo_url:
+        return await tg_api("sendPhoto", {
+            "chat_id": chat_id,
+            "photo": photo_url,
+            "caption": text,
+            "parse_mode": "HTML",
+            "reply_markup": reply_markup
+        })
+    return await tg_api("sendMessage", {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": reply_markup,
+        "disable_web_page_preview": disable_web_page_preview
+    })
+
+async def edit_message_text(chat_id, message_id, text, reply_markup=None):
+    return await tg_api("editMessageText", {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": reply_markup
+    })
+
+async def delete_message(chat_id, message_id):
+    return await tg_api("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+
+async def answer_callback_query(callback_query_id, text=None, show_alert=False):
+    return await tg_api("answerCallbackQuery", {
+        "callback_query_id": callback_query_id,
+        "text": text,
+        "show_alert": show_alert
+    })
+
+# --- HTML TEMPLATES ---
 GENERIC_WEB_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -121,7 +192,7 @@ VIDEO_PLAYER_TEMPLATE = """<!DOCTYPE html>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
-            background: #090d16;
+            background: radial-gradient(circle at top, #131b2e 0%, #05070d 65%);
             color: #f8fafc;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             display: flex;
@@ -132,80 +203,220 @@ VIDEO_PLAYER_TEMPLATE = """<!DOCTYPE html>
         }}
         .player-wrapper {{
             width: 100%;
-            max-width: 900px;
+            max-width: 960px;
             background: #111827;
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 16px;
+            border-radius: 18px;
             overflow: hidden;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+            box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.8);
         }}
-        .video-container {{ width: 100%; background: #000; }}
-        video {{ width: 100%; max-height: 75vh; }}
-        .info-panel {{ padding: 22px; display: flex; flex-direction: column; gap: 18px; }}
-        .title {{ font-size: 1.3rem; font-weight: 700; color: #f1f5f9; word-break: break-all; }}
-        .meta {{ font-size: 0.95rem; color: #94a3b8; }}
-        .actions {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }}
+        .video-container {{ width: 100%; background: #000; position: relative; }}
+        .video-container video {{ width: 100%; max-height: 75vh; display: block; }}
+        .plyr {{ --plyr-color-main: #6366f1; }}
+        .loader {{
+            position: absolute; inset: 0;
+            display: flex; align-items: center; justify-content: center;
+            background: #000; z-index: 5; pointer-events: none;
+            transition: opacity 0.3s ease;
+        }}
+        .loader.hidden {{ opacity: 0; visibility: hidden; }}
+        .spinner {{
+            width: 46px; height: 46px;
+            border: 4px solid rgba(255,255,255,0.15);
+            border-top-color: #6366f1;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        .info-panel {{ padding: 22px; display: flex; flex-direction: column; gap: 16px; }}
+        .title {{ font-size: 1.25rem; font-weight: 700; color: #f1f5f9; word-break: break-all; }}
+        .meta {{ font-size: 0.9rem; color: #94a3b8; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+        .badge {{
+            background: rgba(99,102,241,0.15); color: #a5b4fc;
+            padding: 3px 10px; border-radius: 20px; font-size: 0.78rem; font-weight: 600;
+        }}
+        .actions {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
         .btn {{
-            padding: 14px 20px;
+            padding: 14px 18px;
             border-radius: 12px;
             font-weight: 600;
+            font-size: 0.92rem;
             text-decoration: none;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
+            gap: 8px;
             color: #fff;
             border: none;
+            cursor: pointer;
             transition: all 0.2s ease;
             box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }}
-        .btn:hover {{ transform: translateY(-2px); }}
+        .btn:hover {{ transform: translateY(-2px); filter: brightness(1.08); }}
         .btn-orange {{ background: linear-gradient(135deg, #f97316, #ea580c); }}
         .btn-red {{ background: linear-gradient(135deg, #ef4444, #dc2626); }}
         .btn-green {{ background: linear-gradient(135deg, #10b981, #059669); }}
         .btn-blue {{ background: linear-gradient(135deg, #3b82f6, #2563eb); }}
+        .footer-note {{ font-size: 0.78rem; color: #4b5563; text-align: center; margin-top: 4px; }}
     </style>
 </head>
 <body>
     <div class="player-wrapper">
         <div class="video-container">
-            <video id="player" controls crossorigin playsinline>
-                <source src="{stream_url}" />
+            <div class="loader" id="loader"><div class="spinner"></div></div>
+            <video id="player" playsinline controls crossorigin preload="metadata">
+                <source src="{stream_url}" type="{mime_type}" />
             </video>
         </div>
         <div class="info-panel">
             <div class="title">🎬 {display_title}</div>
-            <div class="meta">💾 File Size: {file_size}</div>
+            <div class="meta">
+                <span class="badge">💾 {file_size}</span>
+                <span class="badge">⚡ Seekable Stream</span>
+            </div>
             <div class="actions">
                 <a href="{mx_url}" class="btn btn-orange">🟧 Open in MX Player</a>
                 <a href="{vlc_url}" class="btn btn-red">🔴 Open in VLC</a>
                 <a href="{download_url}" class="btn btn-green">📥 Instant Download</a>
+                <button class="btn btn-blue" onclick="copyLink()">🔗 Copy Direct Link</button>
             </div>
+            <div class="footer-note">Powered by File 2 Links — streamed directly from Telegram</div>
         </div>
     </div>
     <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
-    <script>const player = new Plyr('#player');</script>
+    <script>
+        const player = new Plyr('#player', {{
+            settings: ['quality', 'speed'],
+            seekTime: 10
+        }});
+        const loader = document.getElementById('loader');
+        const videoEl = document.getElementById('player');
+        videoEl.addEventListener('canplay', () => loader.classList.add('hidden'));
+        videoEl.addEventListener('waiting', () => loader.classList.remove('hidden'));
+        videoEl.addEventListener('playing', () => loader.classList.add('hidden'));
+        function copyLink() {{
+            navigator.clipboard.writeText("{stream_url}").then(() => {{
+                const originalTitle = document.title;
+                document.title = "✅ Link Copied!";
+                setTimeout(() => document.title = originalTitle, 1500);
+            }});
+        }}
+    </script>
 </body>
 </html>
 """
 
-async def send_raw_telegram_message(chat_id, text, reply_markup=None, photo_url=None):
-    async with aiohttp.ClientSession() as session:
-        payload = {
-            "chat_id": chat_id,
-            "parse_mode": "HTML",
-            "reply_markup": reply_markup
-        }
-        if photo_url:
-            payload["photo"] = photo_url
-            payload["caption"] = text
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-        else:
-            payload["text"] = text
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+MX_REDIRECT_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Opening MX Player...</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            background: #090d16; color: #f8fafc; font-family: 'Segoe UI', sans-serif;
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; padding: 20px;
+        }}
+        .card {{
+            background: #111827; border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px; padding: 34px 28px; max-width: 420px; width: 100%;
+            text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7);
+        }}
+        .spinner {{
+            width: 44px; height: 44px; margin: 0 auto 18px;
+            border: 4px solid rgba(249,115,22,0.2); border-top-color: #f97316;
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+        }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        h2 {{ margin-bottom: 8px; }}
+        p {{ color: #94a3b8; font-size: 0.9rem; margin-bottom: 22px; }}
+        .btn {{
+            display: inline-block; padding: 13px 26px;
+            background: linear-gradient(135deg, #f97316, #ea580c); color: #fff;
+            text-decoration: none; border-radius: 12px; font-weight: 700;
+            box-shadow: 0 4px 12px rgba(249,115,22,0.4);
+        }}
+        .fallback {{ margin-top: 16px; font-size: 0.8rem; }}
+        .fallback a {{ color: #60a5fa; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="spinner"></div>
+        <h2>🟧 Opening in MX Player...</h2>
+        <p>{display_title}</p>
+        <a href="{intent_url}" id="mx-launch" class="btn">▶️ Open MX Player Now</a>
+        <div class="fallback">Player didn't open? <a href="{stream_url}">Stream in browser</a> or <a href="{download_url}">download</a> instead.</div>
+    </div>
+    <script>
+        // Auto-trigger the Android intent once the page loads. A visible
+        // button is kept as a fallback for browsers that block auto intents.
+        window.addEventListener('load', function () {{
+            window.location.href = document.getElementById('mx-launch').href;
+        }});
+    </script>
+</body>
+</html>
+"""
 
-        async with session.post(url, json=payload) as resp:
-            return await resp.json()
+VLC_REDIRECT_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Opening VLC Player...</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            background: #090d16; color: #f8fafc; font-family: 'Segoe UI', sans-serif;
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; padding: 20px;
+        }}
+        .card {{
+            background: #111827; border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px; padding: 34px 28px; max-width: 420px; width: 100%;
+            text-align: center; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.7);
+        }}
+        .spinner {{
+            width: 44px; height: 44px; margin: 0 auto 18px;
+            border: 4px solid rgba(239,68,68,0.2); border-top-color: #ef4444;
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+        }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        h2 {{ margin-bottom: 8px; }}
+        p {{ color: #94a3b8; font-size: 0.9rem; margin-bottom: 22px; }}
+        .btn {{
+            display: inline-block; padding: 13px 26px;
+            background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff;
+            text-decoration: none; border-radius: 12px; font-weight: 700;
+            box-shadow: 0 4px 12px rgba(239,68,68,0.4);
+        }}
+        .fallback {{ margin-top: 16px; font-size: 0.8rem; }}
+        .fallback a {{ color: #60a5fa; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="spinner"></div>
+        <h2>🔴 Opening in VLC Player...</h2>
+        <p>{display_title}</p>
+        <a href="{vlc_url}" id="vlc-launch" class="btn">▶️ Open VLC Player Now</a>
+        <div class="fallback">Player didn't open? <a href="{stream_url}">Stream in browser</a> or <a href="{download_url}">download</a> instead.</div>
+    </div>
+    <script>
+        window.addEventListener('load', function () {{
+            window.location.href = document.getElementById('vlc-launch').href;
+        }});
+    </script>
+</body>
+</html>
+"""
+
+# =========================================================================
+# TELEGRAM COMMAND / CALLBACK HANDLERS
+# =========================================================================
 
 async def check_fsub(bot, user_id):
     try:
@@ -232,14 +443,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_subscribed = await check_fsub(context.bot, user.id)
     if not is_subscribed:
-        fsub_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Join Update Channel", url=FSUB_LINK)],
-            [InlineKeyboardButton("🔄 Try Again / Verify", callback_data="check_fsub")]
+        fsub_markup = markup([
+            [btn("📢 Join Update Channel", url=FSUB_LINK, style="primary")],
+            [btn("🔄 Try Again / Verify", callback_data="check_fsub", style="success")]
         ])
-        await update.message.reply_text(
-            "⚠️ <b>Access Restricted!</b>\n\nPlease join our channel to use <b>File 2 Links Bot</b>.",
-            reply_markup=fsub_markup,
-            parse_mode=ParseMode.HTML
+        await send_message(
+            chat_id=update.effective_chat.id,
+            text="⚠️ <b>Access Restricted!</b>\n\nPlease join our channel to use <b>File 2 Links Bot</b>.",
+            reply_markup=fsub_markup
         )
         return
 
@@ -248,48 +459,54 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚡ <b>File 2 Links Bot</b> is operational with <b>Integrated Player Support</b>.\n"
         f"<blockquote>Send any video, audio, photo, or document to generate instant Streaming & MX Player links.</blockquote>"
     )
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✨ Open Web App", web_app={"url": f"{BASE_URL}"})],
-        [InlineKeyboardButton("📖 Help Guide", callback_data="help_menu")]
+    buttons = markup([
+        [btn("✨ Open Web App", web_app_url=BASE_URL, style="primary")],
+        [btn("📖 Help Guide", callback_data="help_menu", style="success")]
     ])
 
-    await send_raw_telegram_message(
+    await send_message(
         chat_id=update.effective_chat.id,
         text=welcome_text,
-        reply_markup=buttons.to_dict(),
+        reply_markup=buttons,
         photo_url=START_PIC if START_PIC else None
     )
 
 async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    
+    chat_id = query.message.chat.id
+    message_id = query.message.message_id
+
     if query.data == "help_menu":
+        await answer_callback_query(query.id)
         help_text = (
             "📖 <b>File 2 Links - Help Center</b>\n\n"
             "<blockquote>• Forward or send files in chat to get links.\n"
             "• Videos/Audio support direct streaming, MX Player & VLC.\n"
             "• Photos and documents provide secure web view & downloads.</blockquote>"
         )
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Close Panel", callback_data="close_menu")]
+        buttons = markup([
+            [btn("❌ Close Panel", callback_data="close_menu", style="danger")]
         ])
-        await query.message.edit_text(help_text, reply_markup=buttons, parse_mode=ParseMode.HTML)
+        await edit_message_text(chat_id, message_id, help_text, reply_markup=buttons)
+
     elif query.data == "close_menu":
-        await query.message.delete()
+        await answer_callback_query(query.id)
+        await delete_message(chat_id, message_id)
+
     elif query.data == "check_fsub":
         is_subscribed = await check_fsub(context.bot, query.from_user.id)
         if is_subscribed:
-            await query.message.delete()
-            await query.message.reply_text("✅ Verified successfully! You can send your files now.")
+            await answer_callback_query(query.id)
+            await delete_message(chat_id, message_id)
+            await send_message(chat_id, "✅ Verified successfully! You can send your files now.")
         else:
-            await query.answer("❌ You haven't joined the channel yet!", show_alert=True)
+            await answer_callback_query(query.id, text="❌ You haven't joined the channel yet!", show_alert=True)
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     result = await files_col.delete_many({})
-    await update.message.reply_text(f"🗑️ Cleared database records: <code>{result.deleted_count}</code>", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"🗑️ Cleared database records: <code>{result.deleted_count}</code>", parse_mode="HTML")
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -305,7 +522,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sent += 1
         except Exception:
             continue
-    await update.message.reply_text(f"✅ Broadcast complete. Delivered to <code>{sent}</code> users.", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"✅ Broadcast complete. Delivered to <code>{sent}</code> users.", parse_mode="HTML")
 
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
@@ -324,9 +541,9 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat.type == "private":
         if not await check_fsub(context.bot, user.id):
-            fsub_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📢 Join Update Channel", url=FSUB_LINK)],
-                [InlineKeyboardButton("🔄 Verify Membership", callback_data="check_fsub")]
+            fsub_markup = markup([
+                [btn("📢 Join Update Channel", url=FSUB_LINK, style="primary")],
+                [btn("🔄 Verify Membership", callback_data="check_fsub", style="success")]
             ])
             await message.reply_text("⚠️ Please join our official channel to process links.", reply_markup=fsub_markup)
             return
@@ -340,7 +557,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     original_caption = message.caption or ""
     file_size_bytes = getattr(media, "file_size", 0)
     file_size_str = get_readable_file_size(file_size_bytes)
-    
+
     if message.photo:
         filename = f"Image_{int(time.time())}.jpg"
     else:
@@ -367,7 +584,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from_chat_id=chat.id,
         message_id=message.message_id,
         caption=log_caption,
-        parse_mode=ParseMode.HTML
+        parse_mode="HTML"
     )
 
     file_doc = {
@@ -387,7 +604,6 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mx_url = f"{BASE_URL}/mx?id={log_msg.message_id}"
     vlc_url = f"{BASE_URL}/vlc?id={log_msg.message_id}"
 
-    # RICH FORMATTED TELEGRAM MESSAGE
     reply_text = (
         f"⚡ <b>File Stream & Download Ready!</b>\n\n"
         f"📁 <b>File Name:</b> <code>{filename}</code>\n"
@@ -396,23 +612,36 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if is_video_audio:
-        buttons = InlineKeyboardMarkup([
+        buttons = markup([
             [
-                InlineKeyboardButton("🖥️ Watch Web View", url=watch_url),
-                InlineKeyboardButton("📥 Download", url=download_url)
+                btn("🖥️ Watch Web View", url=watch_url, style="primary"),
+                btn("📥 Download", url=download_url, style="success")
             ],
             [
-                InlineKeyboardButton("🟧 MX Player", url=mx_url),
-                InlineKeyboardButton("🔴 VLC Player", url=vlc_url)
+                btn("🟧 MX Player", url=mx_url, style="danger"),
+                btn("🔴 VLC Player", url=vlc_url, style="danger")
             ]
         ])
     else:
-        buttons = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌐 Web View Preview", url=watch_url)],
-            [InlineKeyboardButton("📥 Fast Download File", url=download_url)]
+        buttons = markup([
+            [btn("🌐 Web View Preview", url=watch_url, style="primary")],
+            [btn("📥 Fast Download File", url=download_url, style="success")]
         ])
 
     await message.reply_html(reply_text, reply_markup=buttons, disable_web_page_preview=True)
+
+# =========================================================================
+# HTTP RANGE PARSING (needed for seeking / MX Player / VLC support)
+# =========================================================================
+def parse_range_header(range_header: str, file_size: int):
+    range_val = range_header.strip().lower().replace("bytes=", "").split("-")
+    from_bytes = int(range_val[0]) if range_val[0].strip() else 0
+    until_bytes = int(range_val[1]) if len(range_val) > 1 and range_val[1].strip() else file_size - 1
+    if until_bytes >= file_size:
+        until_bytes = file_size - 1
+    if from_bytes < 0 or from_bytes > until_bytes:
+        from_bytes = 0
+    return from_bytes, until_bytes
 
 # --- INSTANT HTML REDIRECT HANDLERS FOR MX PLAYER & VLC ---
 async def handle_mx(request):
@@ -423,24 +652,26 @@ async def handle_mx(request):
     msg_id = int(msg_id_str)
     file_doc = await files_col.find_one({"msg_id": msg_id})
     display_title = file_doc.get("display_title", "Media Stream") if file_doc else "Media Stream"
-    
+
     stream_url = f"{BASE_URL}/stream?id={msg_id}"
-    intent_url = f"intent:{stream_url}#Intent;package=com.mxtech.videoplayer.ad;S.title={display_title};end"
-    
-    html_content = f"""<!DOCTYPE html>
-    <html><head>
-        <meta charset="UTF-8">
-        <title>Opening MX Player...</title>
-        <meta http-equiv="refresh" content="0;url={intent_url}">
-        <style>
-            body {{ background: #090d16; color: #f8fafc; font-family: sans-serif; text-align: center; padding: 50px 20px; }}
-            .btn {{ display: inline-block; margin-top: 20px; padding: 12px 25px; background: #f97316; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }}
-        </style>
-    </head><body>
-        <h2>🟧 Opening in MX Player...</h2>
-        <p>If MX Player does not open automatically, click the button below:</p>
-        <a href="{intent_url}" class="btn">▶️ Open MX Player Now</a>
-    </body></html>"""
+    download_url = f"{stream_url}&d=true"
+    # 'type=video/*' + browser_fallback_url makes the intent reliable across
+    # MX Player builds and gives Chrome/Android something sane to fall back to.
+    intent_url = (
+        f"intent:{stream_url}#Intent;"
+        f"package=com.mxtech.videoplayer.ad;"
+        f"type=video/*;"
+        f"S.title={display_title};"
+        f"S.browser_fallback_url={stream_url};"
+        f"end"
+    )
+
+    html_content = MX_REDIRECT_TEMPLATE.format(
+        display_title=display_title,
+        intent_url=intent_url,
+        stream_url=stream_url,
+        download_url=download_url
+    )
     return web.Response(text=html_content, content_type="text/html")
 
 async def handle_vlc(request):
@@ -449,23 +680,19 @@ async def handle_vlc(request):
         return web.Response(text="Invalid parameters", status=400)
 
     msg_id = int(msg_id_str)
+    file_doc = await files_col.find_one({"msg_id": msg_id})
+    display_title = file_doc.get("display_title", "Media Stream") if file_doc else "Media Stream"
+
     stream_url = f"{BASE_URL}/stream?id={msg_id}"
+    download_url = f"{stream_url}&d=true"
     vlc_url = f"vlc://{stream_url}"
-    
-    html_content = f"""<!DOCTYPE html>
-    <html><head>
-        <meta charset="UTF-8">
-        <title>Opening VLC Player...</title>
-        <meta http-equiv="refresh" content="0;url={vlc_url}">
-        <style>
-            body {{ background: #090d16; color: #f8fafc; font-family: sans-serif; text-align: center; padding: 50px 20px; }}
-            .btn {{ display: inline-block; margin-top: 20px; padding: 12px 25px; background: #ef4444; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }}
-        </style>
-    </head><body>
-        <h2>🔴 Opening in VLC Player...</h2>
-        <p>If VLC Player does not open automatically, click the button below:</p>
-        <a href="{vlc_url}" class="btn">▶️ Open VLC Player Now</a>
-    </body></html>"""
+
+    html_content = VLC_REDIRECT_TEMPLATE.format(
+        display_title=display_title,
+        vlc_url=vlc_url,
+        stream_url=stream_url,
+        download_url=download_url
+    )
     return web.Response(text=html_content, content_type="text/html")
 
 async def handle_watch(request):
@@ -480,9 +707,9 @@ async def handle_watch(request):
 
     stream_url = f"{BASE_URL}/stream?id={msg_id}"
     download_url = f"{stream_url}&d=true"
-    mx_url = f"intent:{stream_url}#Intent;package=com.mxtech.videoplayer.ad;S.title={file_doc.get('display_title', 'Video')};end"
-    vlc_url = f"vlc://{stream_url}"
-    
+    mx_url = f"{BASE_URL}/mx?id={msg_id}"
+    vlc_url = f"{BASE_URL}/vlc?id={msg_id}"
+
     display_title = file_doc.get("display_title", "Media File")
     file_size_str = file_doc.get("file_size_str", "Unknown Size")
 
@@ -493,13 +720,14 @@ async def handle_watch(request):
             mx_url=mx_url,
             vlc_url=vlc_url,
             display_title=display_title,
-            file_size=file_size_str
+            file_size=file_size_str,
+            mime_type="video/mp4"
         )
     else:
         is_image = "Image" in display_title or ".jpg" in display_title.lower() or ".png" in display_title.lower() or ".jpeg" in display_title.lower()
         icon_emoji = "🖼️" if is_image else "📄"
         media_preview_html = f'<div class="preview-container"><img src="{stream_url}" alt="Preview"></div>' if is_image else ""
-        
+
         html_content = GENERIC_WEB_TEMPLATE.format(
             display_title=display_title,
             file_size=file_size_str,
@@ -511,6 +739,9 @@ async def handle_watch(request):
     return web.Response(text=html_content, content_type="text/html")
 
 async def handle_stream(request):
+    """Serves the media binary with proper HTTP Range support. Without this,
+    players like MX Player / VLC / the in-browser <video> tag cannot seek and
+    often refuse to start playback at all on larger files."""
     msg_id_str = request.query.get("id")
     is_download = request.query.get("d") == "true"
 
@@ -537,20 +768,56 @@ async def handle_stream(request):
             file_size = getattr(media, "file_size", 0)
             mime_type = getattr(media, "mime_type", "application/octet-stream")
 
+        range_header = request.headers.get("Range")
+
+        if range_header and file_size:
+            from_bytes, until_bytes = parse_range_header(range_header, file_size)
+            status = 206
+        else:
+            from_bytes, until_bytes = 0, (file_size - 1 if file_size else 0)
+            status = 200
+
+        req_length = until_bytes - from_bytes + 1
+
         headers = {
             "Content-Type": mime_type,
-            "Content-Length": str(file_size),
-            "Accept-Ranges": "bytes"
+            "Content-Length": str(req_length),
+            "Accept-Ranges": "bytes",
         }
+        if status == 206:
+            headers["Content-Range"] = f"bytes {from_bytes}-{until_bytes}/{file_size}"
+
         if is_download:
             headers["Content-Disposition"] = f'attachment; filename="{filename}"'
         else:
             headers["Content-Disposition"] = f'inline; filename="{filename}"'
 
-        response = web.StreamResponse(status=200, headers=headers)
+        response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
 
-        async for chunk in tg_client.stream_media(msg):
+        if not file_size:
+            # Fallback for media without a known size: stream sequentially, no ranges.
+            async for chunk in tg_client.stream_media(msg):
+                try:
+                    await response.write(chunk)
+                except (ConnectionResetError, RuntimeError):
+                    break
+            return response
+
+        offset = from_bytes - (from_bytes % CHUNK_SIZE)
+        first_part_cut = from_bytes - offset
+        last_part_cut = (until_bytes % CHUNK_SIZE) + 1
+        part_count = math.ceil((until_bytes + 1 - offset) / CHUNK_SIZE)
+
+        current_part = 0
+        async for chunk in tg_client.stream_media(msg, offset=offset // CHUNK_SIZE, limit=part_count):
+            current_part += 1
+            if part_count == 1:
+                chunk = chunk[first_part_cut:last_part_cut]
+            elif current_part == 1:
+                chunk = chunk[first_part_cut:]
+            elif current_part == part_count:
+                chunk = chunk[:last_part_cut]
             try:
                 await response.write(chunk)
             except (ConnectionResetError, RuntimeError):
@@ -586,7 +853,7 @@ async def main():
     app.router.add_get("/stream", handle_stream)
     app.router.add_get("/mx", handle_mx)
     app.router.add_get("/vlc", handle_vlc)
-    
+
     if BASE_URL:
         app.router.add_post(f"/{BOT_TOKEN}", webhook_handler)
 
