@@ -1,3 +1,11 @@
+# =========================================================================
+#  File 2 Links — Telegram File-to-Link Streaming Bot
+#  -------------------------------------------------------------------
+#  Telegram : @Xioqui_xin (Xioqui)  ·  @TechnicalSerena (Technical 🕷️ Serena)
+#  Instagram: @Prince572002 (Alka Music Status)
+#  Please keep this credit block intact if you fork or redistribute.
+#  See LICENSE for usage terms and liability disclaimer.
+# =========================================================================
 import time
 import os
 import math
@@ -14,6 +22,8 @@ from config import (
     BOT_TOKEN, API_ID, API_HASH, LOG_GROUP, ADMIN_ID,
     PORT, MONGO_URI, DB_NAME, START_PIC, BASE_URL
 )
+
+CREDIT_LINE = "Telegram @Xioqui_xin · @TechnicalSerena  |  Instagram @Prince572002"
 
 # --- MONGODB CONFIGURATION ---
 mongo_client = AsyncIOMotorClient(MONGO_URI)
@@ -39,6 +49,9 @@ FSUB_LINK = "https://t.me/serenaunzipbot"
 # Streaming is served in 1 MiB chunks by Pyrogram's stream_media().
 CHUNK_SIZE = 1024 * 1024
 
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v", ".3gp", ".ts", ".vob", ".mpg", ".mpeg"}
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".aiff", ".alac"}
+
 # --- HELPER: HUMAN READABLE FILE SIZE ---
 def get_readable_file_size(size_in_bytes):
     if not size_in_bytes:
@@ -49,17 +62,37 @@ def get_readable_file_size(size_in_bytes):
         size_in_bytes /= 1024.0
     return f"{size_in_bytes:.2f} TB"
 
-def guess_mime_type(filename, telegram_mime, is_audio=False):
+def guess_mime_type(filename, telegram_mime):
     """Best-effort mime detection so ANY audio/video format Telegram gives us
-    (mp4, mkv, webm, mov, avi, mp3, flac, ogg, wav, m4a, opus, aac, etc.)
-    gets a sane Content-Type / <source type> instead of falling back to a
-    hardcoded 'video/mp4' that could mislead the browser about the real format."""
+    (mp4, mkv, webm, mov, avi, mp3, flac, ogg, wav, m4a, opus, etc.) gets a
+    sane Content-Type instead of falling back to a hardcoded guess."""
     if telegram_mime and telegram_mime != "application/octet-stream":
         return telegram_mime
     guessed, _ = mimetypes.guess_type(filename or "")
     if guessed:
         return guessed
-    return "audio/mpeg" if is_audio else "video/mp4"
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in VIDEO_EXTENSIONS:
+        return "video/mp4"
+    if ext in AUDIO_EXTENSIONS:
+        return "audio/mpeg"
+    return "application/octet-stream"
+
+def classify_media_kind(filename, mime_type):
+    """Returns ('video'|'audio'|None) for files sent as generic Documents —
+    e.g. MKV files, which Telegram usually delivers as a Document rather
+    than its native 'video' type, so they need extension/mime sniffing to
+    still unlock streaming, MX Player, and VLC buttons."""
+    if mime_type and mime_type.startswith("video/"):
+        return "video"
+    if mime_type and mime_type.startswith("audio/"):
+        return "audio"
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext in VIDEO_EXTENSIONS:
+        return "video"
+    if ext in AUDIO_EXTENSIONS:
+        return "audio"
+    return None
 
 # =========================================================================
 # RAW TELEGRAM BOT API LAYER
@@ -93,7 +126,7 @@ def btn(text, url=None, callback_data=None, style=None, web_app_url=None):
 def markup(rows):
     return {"inline_keyboard": rows}
 
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".3gp"}
+VIDEO_MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".3gp"}
 GIF_EXTS = {".gif"}
 
 async def send_start_media(chat_id, text, reply_markup, media_url):
@@ -107,7 +140,7 @@ async def send_start_media(chat_id, text, reply_markup, media_url):
     ext = os.path.splitext(media_url.split("?")[0])[1].lower()
     if ext in GIF_EXTS:
         method, field = "sendAnimation", "animation"
-    elif ext in VIDEO_EXTS:
+    elif ext in VIDEO_MEDIA_EXTS:
         method, field = "sendVideo", "video"
     else:
         method, field = "sendPhoto", "photo"
@@ -165,8 +198,15 @@ async def answer_callback_query(callback_query_id, text=None, show_alert=False):
 # SHARED THEME SWITCHER (CSS + HTML + JS) — reused by the video player and
 # the library page. Sits in a fixed corner, offers several light palettes
 # plus the default dark one, and drives the page background/text colours
-# via CSS variables. The dark control bar over the video itself is kept
-# fixed-dark on purpose (industry standard for legibility over footage).
+# via CSS variables.
+#
+# NOTE: every literal brace below is doubled ({{ }}) because these blocks
+# get embedded into templates that are rendered with str.format(). If a
+# template is returned WITHOUT calling .format() on it, those doubled
+# braces stay literally doubled in the output HTML and break the inline
+# JavaScript (this was the exact cause of the blank "Loading your
+# library…" page — always call .format() on the final template, even with
+# no keyword arguments, so the doubled braces collapse correctly).
 # =========================================================================
 THEME_STYLE = """
 :root {{
@@ -290,7 +330,7 @@ body {{
 .player-box video {{ width:100%; height:100%; object-fit:contain; display:block; filter:brightness(1); }}
 
 .audio-cover {{
-    position:absolute; inset:0; z-index:3; display:{audio_cover_display}; align-items:center; justify-content:center;
+    position:absolute; inset:0; z-index:2; display:{audio_cover_display}; align-items:center; justify-content:center;
     background:linear-gradient(135deg,#1e293b,#0f172a); pointer-events:none;
 }}
 .audio-cover svg {{ width:64px; height:64px; opacity:.85; }}
@@ -300,16 +340,23 @@ body {{
 .spinner {{ width:46px; height:46px; border:4px solid rgba(255,255,255,.15); border-top-color:#6366f1; border-radius:50%; animation:spin .8s linear infinite; }}
 @keyframes spin {{ to {{ transform:rotate(360deg); }} }}
 
-.center-play {{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:5; cursor:pointer; background:rgba(0,0,0,0.25); }}
-.center-play svg {{ width:74px; height:74px; filter:drop-shadow(0 4px 14px rgba(0,0,0,.6)); }}
+.center-play {{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:5; cursor:pointer; }}
+.center-play .play-circle {{
+    width:78px; height:78px; border-radius:50%; background:rgba(17,24,39,0.72);
+    border:2px solid rgba(255,255,255,0.25); display:flex; align-items:center; justify-content:center;
+    box-shadow:0 10px 28px rgba(0,0,0,.55); transition:transform .15s ease, background .15s ease;
+}}
+.center-play:hover .play-circle {{ background:rgba(99,102,241,0.85); transform:scale(1.06); }}
+.center-play svg {{ width:32px; height:32px; margin-left:3px; }}
 .center-play.hidden {{ display:none; }}
 
 .top-bar {{
-    position:absolute; top:0; left:0; right:0; padding:16px; background:linear-gradient(to bottom, rgba(0,0,0,.65), transparent);
-    font-weight:600; font-size:1rem; z-index:4; opacity:1; transition:opacity .3s ease;
-    text-shadow:0 2px 6px rgba(0,0,0,.7); pointer-events:none; color:#fff;
+    position:absolute; top:0; left:0; right:0; padding:12px 16px; z-index:4;
+    background:linear-gradient(to bottom, rgba(0,0,0,.6), transparent);
+    display:flex; align-items:center; pointer-events:none;
 }}
-.controls-hidden .top-bar {{ opacity:0; }}
+.top-bar a {{ pointer-events:auto; color:#fff; text-decoration:none; font-weight:700; font-size:.92rem; text-shadow:0 2px 6px rgba(0,0,0,.7); white-space:nowrap; }}
+.controls-hidden .top-bar {{ opacity:0; transition:opacity .3s ease; }}
 
 .controls {{ position:absolute; left:0; right:0; bottom:0; z-index:4; padding:10px 14px 14px; background:linear-gradient(to top, rgba(0,0,0,.85), transparent); opacity:1; transition:opacity .3s ease; }}
 .controls-hidden .controls {{ opacity:0; pointer-events:none; }}
@@ -336,8 +383,9 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
 
 .menu-wrap {{ position:relative; }}
 .dropdown {{ position:absolute; bottom:38px; right:0; background:#1c2333; border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:6px; display:none; min-width:190px; box-shadow:0 10px 30px rgba(0,0,0,.5); z-index:10; }}
+.dropdown.dropdown-below {{ bottom:auto; top:44px; }}
 .dropdown.open {{ display:block; }}
-.dropdown .row {{ padding:8px 10px; font-size:.85rem; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; color:#f1f5f9; }}
+.dropdown .row {{ padding:8px 10px; font-size:.85rem; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; align-items:center; color:#f1f5f9; text-decoration:none; }}
 .dropdown .row:hover {{ background:rgba(255,255,255,.08); }}
 .dropdown .row.active {{ color:#a5b4fc; font-weight:700; }}
 .dropdown .sub-label {{ font-size:.72rem; color:#94a3b8; padding:6px 10px 2px; }}
@@ -346,16 +394,32 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
 
 /* ---------- INFO PANEL ---------- */
 .info-panel {{ padding:20px 22px; display:flex; flex-direction:column; gap:16px; }}
-.title {{ font-size:1.2rem; font-weight:700; color:var(--text-primary); word-break:break-word; }}
+.title {{
+    font-size:1.15rem; font-weight:700; color:var(--text-primary); word-break:break-word;
+    overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;
+}}
 .meta {{ display:flex; gap:8px; flex-wrap:wrap; }}
 .badge {{ background:var(--badge-bg); color:var(--badge-text); padding:3px 10px; border-radius:20px; font-size:.78rem; font-weight:600; }}
-.actions {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; }}
-.btn {{ padding:13px 16px; border-radius:12px; font-weight:600; font-size:.9rem; text-decoration:none; display:inline-flex; align-items:center; justify-content:center; gap:8px; color:#fff; border:none; cursor:pointer; transition:all .2s ease; box-shadow:0 4px 12px rgba(0,0,0,.3); }}
-.btn:hover {{ transform:translateY(-2px); filter:brightness(1.08); }}
-.btn-orange {{ background:linear-gradient(135deg,#f97316,#ea580c); }}
-.btn-red {{ background:linear-gradient(135deg,#ef4444,#dc2626); }}
-.btn-green {{ background:linear-gradient(135deg,#10b981,#059669); }}
-.btn-blue {{ background:linear-gradient(135deg,#3b82f6,#2563eb); }}
+
+/* ---------- CHANNEL ROW (YouTube-style uploader chip) ---------- */
+.channel-row {{ display:flex; align-items:center; gap:12px; }}
+.avatar-wrap {{ position:relative; width:44px; height:44px; border-radius:50%; overflow:hidden; flex-shrink:0; background:#374151; }}
+.avatar-img {{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }}
+.avatar-fallback {{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:1.1rem; background:linear-gradient(135deg,#6366f1,#8b5cf6); }}
+.channel-name {{ font-weight:600; color:var(--text-primary); font-size:.92rem; }}
+.channel-sub {{ font-size:.72rem; color:var(--text-secondary); }}
+
+/* ---------- YOUTUBE-STYLE ACTION ROW ---------- */
+.yt-actions {{ display:flex; gap:10px; overflow-x:auto; padding-bottom:2px; }}
+.yt-action {{
+    display:flex; align-items:center; gap:8px; padding:10px 16px; border-radius:20px;
+    background:var(--badge-bg); color:var(--text-primary); border:none; cursor:pointer;
+    font-size:.85rem; font-weight:600; white-space:nowrap; text-decoration:none; flex-shrink:0;
+    transition:filter .15s ease;
+}}
+.yt-action:hover {{ filter:brightness(1.15); }}
+.yt-action svg {{ width:19px; height:19px; }}
+
 .footer-note {{ font-size:.76rem; color:var(--text-secondary); text-align:center; }}
 
 /* ---------- RECOMMENDATIONS ---------- */
@@ -395,9 +459,9 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
             </div>
             <div class="loader" id="loader"><div class="spinner"></div></div>
             <div class="center-play" id="centerPlay">
-                <svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+                <div class="play-circle"><svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg></div>
             </div>
-            <div class="top-bar" id="topBar">🎬 {display_title}</div>
+            <div class="top-bar" id="topBar"><a href="{bot_link}">🎬 {bot_name}</a></div>
             <video id="video" playsinline preload="metadata">
                 <source src="{stream_url}" type="{mime_type}">
             </video>
@@ -473,15 +537,44 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
 
         <div class="info-panel">
             <div class="title">{display_title}</div>
+
+            <div class="channel-row">
+                <div class="avatar-wrap">
+                    <img class="avatar-img" src="/avatar?uid={uploader_id}" alt=""
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div class="avatar-fallback" style="display:none;">{uploader_initial}</div>
+                </div>
+                <div>
+                    <div class="channel-name">{uploader_name}</div>
+                    <div class="channel-sub">Uploader</div>
+                </div>
+            </div>
+
+            <div class="yt-actions">
+                <a href="{download_url}" class="yt-action" id="downloadAction">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.6l3.3-3.3 1.4 1.4L12 17 6.3 11.7l1.4-1.4L11 13.6V3h1zM5 19h14v2H5z"/></svg>
+                    Download
+                </a>
+                <button class="yt-action" id="shareAction">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 16.1c-.8 0-1.5.3-2 .8l-7.1-4.1c.1-.3.1-.5.1-.8s0-.5-.1-.8L15.9 7c.5.5 1.2.8 2.1.8 1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3c0 .3 0 .5.1.8L7.9 9.7C7.4 9.3 6.7 9 6 9c-1.7 0-3 1.3-3 3s1.3 3 3 3c.7 0 1.4-.3 1.9-.7l7.2 4.1c-.1.2-.1.5-.1.7 0 1.6 1.3 3 3 3s3-1.4 3-3-1.3-3-3-3z"/></svg>
+                    Share
+                </button>
+                <div class="menu-wrap">
+                    <button class="yt-action" id="openWithAction">
+                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 3v2h3.6l-9.8 9.8 1.4 1.4L19 6.4V10h2V3h-7zM5 5h5V3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-5h-2v5H5V5z"/></svg>
+                        Open with
+                    </button>
+                    <div class="dropdown dropdown-below" id="openWithMenu">
+                        <div class="sub-label">Open in external player</div>
+                        <a class="row" href="{mx_url}">🟧 MX Player</a>
+                        <a class="row" href="{vlc_url}">🔴 VLC Player</a>
+                    </div>
+                </div>
+            </div>
+
             <div class="meta">
                 <span class="badge">💾 {file_size}</span>
                 <span class="badge">⚡ Seekable Stream</span>
-            </div>
-            <div class="actions">
-                <a href="{mx_url}" class="btn btn-orange">🟧 Open in MX Player</a>
-                <a href="{vlc_url}" class="btn btn-red">🔴 Open in VLC</a>
-                <a href="{download_url}" class="btn btn-green">📥 Instant Download</a>
-                <button class="btn btn-blue" onclick="copyLink()">🔗 Copy Direct Link</button>
             </div>
             <div class="footer-note">Powered by File 2 Links — streamed directly from Telegram</div>
         </div>
@@ -497,6 +590,8 @@ input[type=range]::-moz-range-thumb {{ width:12px; height:12px; border-radius:50
 
 <script>
 const CURRENT_ID = {msg_id};
+const STREAM_URL = "{stream_url}";
+const SHARE_TITLE = "{display_title_js}";
 const video = document.getElementById('video');
 const playerBox = document.getElementById('playerBox');
 const loader = document.getElementById('loader');
@@ -523,6 +618,9 @@ const seekBuffer = document.getElementById('seekBuffer');
 const seekThumb = document.getElementById('seekThumb');
 const curTime = document.getElementById('curTime');
 const durTime = document.getElementById('durTime');
+const shareAction = document.getElementById('shareAction');
+const openWithAction = document.getElementById('openWithAction');
+const openWithMenu = document.getElementById('openWithMenu');
 
 const PLAY_PATH = 'M8 5v14l11-7z';
 const PAUSE_PATH = 'M6 5h4v14H6zm8 0h4v14h-4z';
@@ -590,11 +688,12 @@ volumeSlider.addEventListener('input', () => {{
 }});
 
 function closeAllMenus(except) {{
-    [brightnessMenu, speedMenu, audioMenu].forEach(m => {{ if (m !== except) m.classList.remove('open'); }});
+    [brightnessMenu, speedMenu, audioMenu, openWithMenu].forEach(m => {{ if (m !== except) m.classList.remove('open'); }});
 }}
 brightnessBtn.onclick = (e) => {{ e.stopPropagation(); closeAllMenus(brightnessMenu); brightnessMenu.classList.toggle('open'); }};
 speedBtn.onclick = (e) => {{ e.stopPropagation(); closeAllMenus(speedMenu); speedMenu.classList.toggle('open'); }};
 audioBtn.onclick = (e) => {{ e.stopPropagation(); closeAllMenus(audioMenu); audioMenu.classList.toggle('open'); }};
+openWithAction.onclick = (e) => {{ e.stopPropagation(); closeAllMenus(openWithMenu); openWithMenu.classList.toggle('open'); }};
 document.addEventListener('click', () => closeAllMenus(null));
 
 brightnessSlider.addEventListener('input', () => {{ video.style.filter = `brightness(${{brightnessSlider.value / 100}})`; }});
@@ -608,6 +707,19 @@ speedMenu.querySelectorAll('.row').forEach(row => {{
         speedMenu.classList.remove('open');
     }});
 }});
+
+// ---------- Share (YouTube-style) ----------
+shareAction.onclick = async () => {{
+    if (navigator.share) {{
+        try {{ await navigator.share({{ title: SHARE_TITLE, url: STREAM_URL }}); return; }} catch (e) {{ /* user cancelled or unsupported, fall through */ }}
+    }}
+    try {{
+        await navigator.clipboard.writeText(STREAM_URL);
+        const original = shareAction.innerHTML;
+        shareAction.innerHTML = '✅ Link copied';
+        setTimeout(() => shareAction.innerHTML = original, 1500);
+    }} catch (e) {{}}
+}};
 
 // ---------- Audio track switcher ----------
 // Browsers can only enumerate/switch tracks that are natively decodable
@@ -672,14 +784,6 @@ function showControls() {{
 playerBox.addEventListener('mousemove', showControls);
 playerBox.addEventListener('touchstart', showControls);
 showControls();
-
-function copyLink() {{
-    navigator.clipboard.writeText("{stream_url}").then(() => {{
-        const original = document.title;
-        document.title = "✅ Link Copied!";
-        setTimeout(() => document.title = original, 1500);
-    }});
-}}
 
 // ---------- Recommendations (YouTube-style "up next") ----------
 fetch(`/api/suggestions?id=${{CURRENT_ID}}`)
@@ -938,6 +1042,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<blockquote>▸ Send a video, audio, photo, or document to begin\n"
         f"▸ Receive an instant stream link and a download link\n"
         f"▸ Play videos directly in MX Player or VLC, one tap away</blockquote>\n\n"
+        f"🚫 <b>Please do not share NSFW or illegal content.</b> Violators may be banned.\n\n"
         f"Use the buttons below to get started."
     )
     buttons = markup([
@@ -972,7 +1077,9 @@ async def help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>Good to know</b>\n"
             "<blockquote>▸ Images open directly in your browser — view and download, no extra steps\n"
             "▸ Documents are served as direct open / download links\n"
-            "▸ Large files may take a few seconds to begin streaming</blockquote>"
+            "▸ Large files may take a few seconds to begin streaming</blockquote>\n\n"
+            "🚫 <b>NSFW or illegal content is not allowed on this bot.</b>\n\n"
+            f"<i>{CREDIT_LINE}</i>"
         )
         buttons = markup([
             [btn("❌ Close", callback_data="close_menu", style="danger")]
@@ -1050,8 +1157,6 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_size_str = get_readable_file_size(file_size_bytes)
 
     is_photo = bool(message.photo)
-    is_audio_only = bool(message.audio)
-    is_video_audio = bool(message.video or message.audio)
 
     if is_photo:
         filename = f"Image_{int(time.time())}.jpg"
@@ -1067,9 +1172,18 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     display_title = original_caption if original_caption.strip() else filename
 
+    mime_type = guess_mime_type(filename, getattr(media, "mime_type", None))
+
+    # MKV and other "exotic" containers usually arrive as a generic Document
+    # rather than Telegram's native video type — sniff by mime/extension so
+    # they still unlock the Watch/MX Player/VLC buttons instead of being
+    # treated as a plain document.
+    doc_media_kind = classify_media_kind(filename, mime_type) if message.document else None
+    is_video_audio = bool(message.video or message.audio or doc_media_kind)
+    is_audio_only = bool(message.audio) or (doc_media_kind == "audio")
+
     thumb_source = message.video or message.document
     has_thumb = bool(getattr(thumb_source, "thumbnail", None)) if thumb_source else False
-    mime_type = guess_mime_type(filename, getattr(media, "mime_type", None), is_audio=is_audio_only)
 
     log_caption = (
         f"📁 <b>Title:</b> <code>{display_title}</code>\n"
@@ -1088,6 +1202,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_doc = {
         "msg_id": log_msg.message_id,
         "user_id": user.id,
+        "uploader_name": user.full_name,
         "filename": filename,
         "display_title": display_title,
         "file_size_str": file_size_str,
@@ -1231,6 +1346,12 @@ async def handle_watch(request):
     file_size_str = file_doc.get("file_size_str", "Unknown Size")
     mime_type = file_doc.get("mime_type") or "video/mp4"
     is_audio_only = file_doc.get("is_audio_only", False)
+    uploader_id = file_doc.get("user_id", 0)
+    uploader_name = file_doc.get("uploader_name", "Unknown Uploader")
+    uploader_initial = uploader_name[0].upper() if uploader_name else "U"
+
+    bot_username = ptb_app.bot.username if ptb_app.bot else None
+    bot_link = f"https://t.me/{bot_username}" if bot_username else "https://t.me/"
 
     html_content = VIDEO_PLAYER_TEMPLATE.format(
         stream_url=stream_url,
@@ -1238,15 +1359,25 @@ async def handle_watch(request):
         mx_url=mx_url,
         vlc_url=vlc_url,
         display_title=display_title,
+        display_title_js=display_title.replace('"', '\\"'),
         file_size=file_size_str,
         mime_type=mime_type,
         msg_id=msg_id,
-        audio_cover_display="flex" if is_audio_only else "none"
+        audio_cover_display="flex" if is_audio_only else "none",
+        uploader_id=uploader_id,
+        uploader_name=uploader_name,
+        uploader_initial=uploader_initial,
+        bot_name="File 2 Links",
+        bot_link=bot_link
     )
     return web.Response(text=html_content, content_type="text/html")
 
 async def handle_library(request):
-    html_content = LIBRARY_TEMPLATE
+    # .format() is called even with no placeholders so the doubled braces
+    # in THEME_STYLE/THEME_SCRIPT collapse to single braces — without this
+    # the inline JavaScript ships broken (literal "{{" / "}}") and the page
+    # never gets past "Loading your library…".
+    html_content = LIBRARY_TEMPLATE.format()
     return web.Response(text=html_content, content_type="text/html")
 
 async def handle_library_api(request):
@@ -1304,6 +1435,31 @@ async def handle_thumb(request):
     except Exception:
         return web.Response(status=404)
 
+async def handle_avatar(request):
+    """Streams the uploader's Telegram profile photo for the YouTube-style
+    'channel row' beneath the player. Falls back to a 404, which the
+    front-end swaps for a generated initial-letter avatar."""
+    uid_str = request.query.get("uid")
+    if not uid_str or not uid_str.isdigit():
+        return web.Response(status=400)
+
+    uid = int(uid_str)
+    try:
+        photo = None
+        async for p in tg_client.get_chat_photos(uid, limit=1):
+            photo = p
+            break
+        if not photo:
+            return web.Response(status=404)
+
+        photo_bytes = await tg_client.download_media(photo.file_id, in_memory=True)
+        if not photo_bytes:
+            return web.Response(status=404)
+        photo_bytes.seek(0)
+        return web.Response(body=photo_bytes.read(), content_type="image/jpeg")
+    except Exception:
+        return web.Response(status=404)
+
 async def handle_stream(request):
     """Serves the media binary with proper HTTP Range support for ANY audio
     or video format Telegram provides — the actual Content-Type is detected
@@ -1333,7 +1489,7 @@ async def handle_stream(request):
         else:
             filename = getattr(media, "file_name", file_doc.get("filename", "download"))
             file_size = getattr(media, "file_size", 0)
-            mime_type = guess_mime_type(filename, getattr(media, "mime_type", None), is_audio=bool(msg.audio))
+            mime_type = guess_mime_type(filename, getattr(media, "mime_type", None))
 
         range_header = request.headers.get("Range")
 
@@ -1423,6 +1579,7 @@ async def main():
     app.router.add_get("/vlc", handle_vlc)
     app.router.add_get("/api/suggestions", handle_suggestions)
     app.router.add_get("/thumb", handle_thumb)
+    app.router.add_get("/avatar", handle_avatar)
 
     if BASE_URL:
         app.router.add_post(f"/{BOT_TOKEN}", webhook_handler)
@@ -1440,7 +1597,10 @@ async def main():
         webhook_url = f"{BASE_URL}/{BOT_TOKEN}"
         await ptb_app.bot.set_webhook(url=webhook_url)
 
-    print(f"🚀 Service fully running on port {PORT} and loop synchronized!")
+    print("=" * 60)
+    print("🚀 File 2 Links — service is live on port", PORT)
+    print("👤 Credits:", CREDIT_LINE)
+    print("=" * 60)
 
     await asyncio.Event().wait()
 
